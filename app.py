@@ -1,6 +1,8 @@
 import streamlit as st
-from datetime import datetime
-from core import Database, ItemPresupuesto, Presupuesto, Config, generar_pdf_presupuesto
+import importlib
+import core
+importlib.reload(core)
+from core import Database, ItemPresupuesto, Presupuesto, Config, generar_pdf_presupuesto, seguro_float
 
 
 # 0 - login
@@ -39,15 +41,15 @@ def get_db():
 db = get_db()
 
 # Cargar configuración global para cálculos en tiempo real
-config_dict = db.obtener_configuracion()
+config_dict = db.obtener_configuracion() or {}
 config_obj = Config(
-    costo_fijo_base=float(config_dict.get("costo_fijo", 6000.0)),
-    multiplicador_default=float(config_dict.get("multiplicador", 2.0)),
-    precio_metro_dtf=float(config_dict.get("precio_metro_dtf", 0.0)),
-    precio_metro_sublimacion=float(config_dict.get("precio_metro_sublimacion", 0.0)),
-    precio_unidad_serigrafia=float(config_dict.get("precio_unidad_serigrafia", 0.0)),
-    precio_unidad_bordado=float(config_dict.get("precio_unidad_bordado", 0.0)),
-    descripcion_pdf=str(config_dict.get("descripcion_pdf", "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."))
+    costo_fijo_base=seguro_float(config_dict.get("costo_fijo"), 6000.0),
+    multiplicador_default=seguro_float(config_dict.get("multiplicador"), 2.0),
+    precio_metro_dtf=seguro_float(config_dict.get("precio_metro_dtf"), 0.0),
+    precio_metro_sublimacion=seguro_float(config_dict.get("precio_metro_sublimacion"), 0.0),
+    precio_unidad_serigrafia=seguro_float(config_dict.get("precio_unidad_serigrafia"), 0.0),
+    precio_unidad_bordado=seguro_float(config_dict.get("precio_unidad_bordado"), 0.0),
+    descripcion_pdf=str(config_dict.get("descripcion_pdf") or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
 )
 
 # --- 2. NAVEGACIÓN ---

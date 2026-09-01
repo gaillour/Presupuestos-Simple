@@ -34,6 +34,14 @@ def normalizar_texto(texto: str) -> str:
     return unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8').lower().strip()
 
 
+def seguro_float(val, default: float = 0.0) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 # --- CLASES DE DATOS (MODELOS) ---
 
 @dataclass
@@ -45,6 +53,25 @@ class Config:
     precio_unidad_serigrafia: float = 0.0
     precio_unidad_bordado: float = 0.0
     descripcion_pdf: str = "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."
+
+    def __init__(
+        self,
+        costo_fijo_base: float = 6000.0,
+        multiplicador_default: float = 2.0,
+        precio_metro_dtf: float = 0.0,
+        precio_metro_sublimacion: float = 0.0,
+        precio_unidad_serigrafia: float = 0.0,
+        precio_unidad_bordado: float = 0.0,
+        descripcion_pdf: str = "",
+        **kwargs
+    ):
+        self.costo_fijo_base = seguro_float(costo_fijo_base, 6000.0)
+        self.multiplicador_default = seguro_float(multiplicador_default, 2.0)
+        self.precio_metro_dtf = seguro_float(precio_metro_dtf, 0.0)
+        self.precio_metro_sublimacion = seguro_float(precio_metro_sublimacion, 0.0)
+        self.precio_unidad_serigrafia = seguro_float(precio_unidad_serigrafia, 0.0)
+        self.precio_unidad_bordado = seguro_float(precio_unidad_bordado, 0.0)
+        self.descripcion_pdf = str(descripcion_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
 
 @dataclass
 class Tela:
@@ -369,13 +396,13 @@ class Database:
             desc_pdf = extra.get("descripcion_pdf", "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
 
         return {
-            "costo_fijo": float(config_data.get("costo_fijo", 6000.0)),
-            "multiplicador": float(config_data.get("multiplicador", 2.0)),
-            "precio_metro_dtf": estampados_dict.get("dtf", 0.0),
-            "precio_metro_sublimacion": estampados_dict.get("sublimacion", 0.0),
-            "precio_unidad_serigrafia": estampados_dict.get("serigrafia", 0.0),
-            "precio_unidad_bordado": estampados_dict.get("bordado", 0.0),
-            "descripcion_pdf": desc_pdf
+            "costo_fijo": seguro_float(config_data.get("costo_fijo"), 6000.0),
+            "multiplicador": seguro_float(config_data.get("multiplicador"), 2.0),
+            "precio_metro_dtf": seguro_float(estampados_dict.get("dtf"), 0.0),
+            "precio_metro_sublimacion": seguro_float(estampados_dict.get("sublimacion"), 0.0),
+            "precio_unidad_serigrafia": seguro_float(estampados_dict.get("serigrafia"), 0.0),
+            "precio_unidad_bordado": seguro_float(estampados_dict.get("bordado"), 0.0),
+            "descripcion_pdf": str(desc_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
         }
 
     def actualizar_configuracion(self, costo_fijo: float, multiplicador: float, precio_dtf: float = 0.0, precio_sublimacion: float = 0.0, precio_serigrafia: float = 0.0, precio_bordado: float = 0.0, descripcion_pdf: str = ""):
