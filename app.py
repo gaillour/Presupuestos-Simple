@@ -2,6 +2,33 @@ import streamlit as st
 from datetime import datetime
 from core import Database, ItemPresupuesto, Presupuesto, Config, generar_pdf_presupuesto
 
+
+# 0 - login
+def verificar_contrasena():
+    """Devuelve True si la contraseña ingresada coincide con los secretos."""
+    def validar():
+        if st.session_state["clave_ingresada"] == st.secrets["passwords"]["pyme_admin"]:
+            st.session_state["autorizado"] = True
+            del st.session_state["clave_ingresada"]  # Limpiamos la variable por seguridad
+        else:
+            st.session_state["autorizado"] = False
+
+    if "autorizado" not in st.session_state:
+        st.title("🔒 Acceso Restringido")
+        st.text_input("Ingresá la contraseña", type="password", on_change=validar, key="clave_ingresada")
+        return False
+    elif not st.session_state["autorizado"]:
+        st.title("🔒 Acceso Restringido")
+        st.text_input("Ingresá la contraseña", type="password", on_change=validar, key="clave_ingresada")
+        st.error("Contraseña incorrecta.")
+        return False
+    
+    return True
+
+# Si la contraseña no está aprobada, st.stop() corta la ejecución de todo el código de acá para abajo.
+if not verificar_contrasena():
+    st.stop()
+
 # --- 1. CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Gestión Textil - Catálogo y Costos", layout="wide")
 
