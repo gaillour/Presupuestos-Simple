@@ -46,6 +46,7 @@ config_obj = Config(
     precio_metro_dtf=float(config_dict.get("precio_metro_dtf", 0.0)),
     precio_metro_sublimacion=float(config_dict.get("precio_metro_sublimacion", 0.0)),
     precio_unidad_serigrafia=float(config_dict.get("precio_unidad_serigrafia", 0.0)),
+    precio_unidad_bordado=float(config_dict.get("precio_unidad_bordado", 0.0)),
     descripcion_pdf=str(config_dict.get("descripcion_pdf", "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."))
 )
 
@@ -82,7 +83,7 @@ if opcion == "Catálogo de Productos":
             col_k1.metric("Prendas en Catálogo", len(productos))
             col_k2.metric("Multiplicador Vigente", f"{config_obj.multiplicador_default}x")
             col_k3.metric("Costo Fijo Base", f"${config_obj.costo_fijo_base:,.2f}")
-            col_k4.metric("Técnicas Activas", "DTF / Sublimación / Serigrafía")
+            col_k4.metric("Técnicas Activas", "DTF / Subl. / Seri. / Bordado")
 
         if not productos:
             st.info("No hay productos cargados en el catálogo. Podés agregar el primero en la pestaña 'Nuevo Producto'.")
@@ -106,6 +107,8 @@ if opcion == "Catálogo de Productos":
                     if p.tipo_estampado and p.tipo_estampado != "Ninguno" and p.consumo_estampado > 0
                     else "Sin estampado"
                 )
+                
+                detalle_avio = f"{p.nombre_avio} (${p.costo_avio:,.2f})" if (p.costo_avio > 0 or p.nombre_avio) else "Sin avíos"
 
                 tabla_prod.append({
                     "ID": p.id,
@@ -113,9 +116,11 @@ if opcion == "Catálogo de Productos":
                     "Tela": p.tela.nombre,
                     "Consumo Tela": f"{p.consumo_metros:.2f} m",
                     "Costo Tela": f"${p.costo_tela:,.2f}",
-                    "Costo Confección": f"${p.costo_confeccion:,.2f}",
+                    "Confección": f"${p.costo_confeccion:,.2f}",
                     "Estampado": detalle_est,
                     "Costo Estampado": f"${c_estampado:,.2f}",
+                    "Avíos": detalle_avio,
+                    "Costo Avíos": f"${p.costo_avio:,.2f}",
                     "Costo Producción": f"${c_produccion:,.2f}",
                     "Precio Venta Catálogo": f"${p_venta:,.2f}"
                 })
@@ -136,7 +141,7 @@ if opcion == "Catálogo de Productos":
                 nuevo_costo_conf = st.number_input("Costo de confección ($)", min_value=0.0, step=500.0, value=2500.0)
 
             with col_c2:
-                nueva_tecnica = st.selectbox("Técnica de estampado", ["Ninguno", "Sublimación", "DTF", "Serigrafía"])
+                nueva_tecnica = st.selectbox("Técnica de estampado", ["Ninguno", "Sublimación", "DTF", "Serigrafía", "Bordado"])
                 
                 if nueva_tecnica == "Sublimación":
                     p_ref = config_obj.precio_metro_sublimacion
@@ -150,9 +155,20 @@ if opcion == "Catálogo de Productos":
                     p_ref = config_obj.precio_unidad_serigrafia
                     nuevo_consumo_est = st.number_input("Cantidad de estampas por prenda", min_value=0.0, step=1.0, value=1.0)
                     st.info(f"Precio de referencia: **${p_ref:,.2f} / unidad**")
+                elif nueva_tecnica == "Bordado":
+                    p_ref = config_obj.precio_unidad_bordado
+                    nuevo_consumo_est = st.number_input("Cantidad de bordados por prenda", min_value=0.0, step=1.0, value=1.0)
+                    st.info(f"Precio de referencia: **${p_ref:,.2f} / unidad**")
                 else:
                     nuevo_consumo_est = 0.0
                     st.caption("Esta prenda no incluye estampado.")
+
+            st.subheader("Avíos y Accesorios (Opcional)")
+            col_av1, col_av2 = st.columns([2, 1])
+            with col_av1:
+                nuevo_nombre_avio = st.text_input("Detalle del avío (Ej: Cierre 20cm, Botones, Elástico)", placeholder="Sin avíos")
+            with col_av2:
+                nuevo_costo_avio = st.number_input("Costo del avío ($ por prenda)", min_value=0.0, step=100.0, value=0.0)
 
             # Cálculo de costos en tiempo real
             costo_tela_prev = nueva_tela.precio_metro * nuevo_consumo
@@ -162,20 +178,23 @@ if opcion == "Catálogo de Productos":
                 costo_est_prev = nuevo_consumo_est * config_obj.precio_metro_sublimacion
             elif nueva_tecnica == "Serigrafía":
                 costo_est_prev = nuevo_consumo_est * config_obj.precio_unidad_serigrafia
+            elif nueva_tecnica == "Bordado":
+                costo_est_prev = nuevo_consumo_est * config_obj.precio_unidad_bordado
             else:
                 costo_est_prev = 0.0
 
-            costo_prod_prev = costo_tela_prev + nuevo_costo_conf + costo_est_prev
+            costo_prod_prev = costo_tela_prev + nuevo_costo_conf + costo_est_prev + nuevo_costo_avio
             precio_venta_prev = (costo_prod_prev * config_obj.multiplicador_default) + config_obj.costo_fijo_base
 
             with st.container(border=True):
                 st.write("📊 **Desglose de Costos y Precio de Venta Estimado**")
-                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+                col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
                 col_m1.metric("Costo Tela", f"${costo_tela_prev:,.2f}")
                 col_m2.metric("Confección", f"${nuevo_costo_conf:,.2f}")
                 col_m3.metric("Estampado", f"${costo_est_prev:,.2f}")
-                col_m4.metric("Costo Producción", f"${costo_prod_prev:,.2f}")
-                col_m5.metric("Precio Venta Catálogo", f"${precio_venta_prev:,.2f}")
+                col_m4.metric("Avíos", f"${nuevo_costo_avio:,.2f}")
+                col_m5.metric("Costo Producción", f"${costo_prod_prev:,.2f}")
+                col_m6.metric("Precio Venta Catálogo", f"${precio_venta_prev:,.2f}")
 
             if st.button("💾 Guardar Producto en Catálogo", type="primary"):
                 if not nuevo_nombre.strip():
@@ -187,7 +206,9 @@ if opcion == "Catálogo de Productos":
                         consumo=nuevo_consumo,
                         costo_confeccion=nuevo_costo_conf,
                         tipo_estampado=nueva_tecnica,
-                        consumo_estampado=nuevo_consumo_est
+                        consumo_estampado=nuevo_consumo_est,
+                        nombre_avio=nuevo_nombre_avio.strip(),
+                        costo_avio=nuevo_costo_avio
                     )
                     st.success(f"¡Producto '{nuevo_nombre}' agregado al catálogo con éxito!")
                     st.rerun()
@@ -195,18 +216,33 @@ if opcion == "Catálogo de Productos":
     # --- PESTAÑA 3: EDITAR / ELIMINAR ---
     with tab_editar:
         st.subheader("Modificar o Eliminar Prenda")
+
+        if "msg_exito_prod" in st.session_state:
+            st.success(st.session_state.pop("msg_exito_prod"))
+
         if not productos:
             st.info("No hay productos disponibles para editar.")
         else:
+            # Preservar el producto seleccionado para no saltar al siguiente al editar
+            idx_prod_sel = 0
+            if "prod_edit_id" in st.session_state:
+                for i, p in enumerate(productos):
+                    if p.id == st.session_state["prod_edit_id"]:
+                        idx_prod_sel = i
+                        break
+
             prod_seleccionado = st.selectbox(
                 "Seleccioná la prenda a editar:", 
                 productos, 
+                index=idx_prod_sel,
+                key="selector_prenda_editar",
                 format_func=lambda p: f"{p.nombre} (ID: {p.id} | Tela: {p.tela.nombre})"
             )
+            st.session_state["prod_edit_id"] = prod_seleccionado.id
 
             col_e1, col_e2 = st.columns(2)
             with col_e1:
-                edit_nombre = st.text_input("Nombre de la prenda", value=prod_seleccionado.nombre)
+                edit_nombre = st.text_input("Nombre de la prenda", value=prod_seleccionado.nombre, key=f"p_nom_{prod_seleccionado.id}")
                 
                 # Encontrar índice de tela actual
                 idx_tela = 0
@@ -214,34 +250,45 @@ if opcion == "Catálogo de Productos":
                     if t.id == prod_seleccionado.tela.id:
                         idx_tela = i
                         break
-                edit_tela = st.selectbox("Tela", telas, index=idx_tela, format_func=lambda t: f"{t.nombre} (${t.precio_metro:,.2f}/m)", key="edit_tela_sel")
-                edit_consumo = st.number_input("Consumo de tela por prenda (metros)", min_value=0.01, step=0.05, value=float(prod_seleccionado.consumo_metros), key="edit_consumo_input")
-                edit_costo_conf = st.number_input("Costo de confección ($)", min_value=0.0, step=500.0, value=float(prod_seleccionado.costo_confeccion), key="edit_conf_input")
+                edit_tela = st.selectbox("Tela", telas, index=idx_tela, format_func=lambda t: f"{t.nombre} (${t.precio_metro:,.2f}/m)", key=f"p_tela_{prod_seleccionado.id}")
+                edit_consumo = st.number_input("Consumo de tela por prenda (metros)", min_value=0.01, step=0.05, value=float(prod_seleccionado.consumo_metros), key=f"p_cons_{prod_seleccionado.id}")
+                edit_costo_conf = st.number_input("Costo de confección ($)", min_value=0.0, step=500.0, value=float(prod_seleccionado.costo_confeccion), key=f"p_conf_{prod_seleccionado.id}")
 
             with col_e2:
-                tecnicas_disponibles = ["Ninguno", "Sublimación", "DTF", "Serigrafía"]
+                tecnicas_disponibles = ["Ninguno", "Sublimación", "DTF", "Serigrafía", "Bordado"]
                 idx_tec = 0
                 for i, tec in enumerate(tecnicas_disponibles):
                     if tec.lower() == (prod_seleccionado.tipo_estampado or "").lower():
                         idx_tec = i
                         break
-                edit_tecnica = st.selectbox("Técnica de estampado", tecnicas_disponibles, index=idx_tec, key="edit_tec_sel")
+                edit_tecnica = st.selectbox("Técnica de estampado", tecnicas_disponibles, index=idx_tec, key=f"p_tec_{prod_seleccionado.id}")
                 
                 if edit_tecnica == "Sublimación":
                     p_ref = config_obj.precio_metro_sublimacion
-                    edit_consumo_est = st.number_input("Metros de Sublimación por prenda", min_value=0.0, step=0.05, value=float(prod_seleccionado.consumo_estampado), key="edit_sub_input")
+                    edit_consumo_est = st.number_input("Metros de Sublimación por prenda", min_value=0.0, step=0.05, value=float(prod_seleccionado.consumo_estampado), key=f"p_sub_{prod_seleccionado.id}")
                     st.info(f"Precio de referencia: **${p_ref:,.2f} / metro**")
                 elif edit_tecnica == "DTF":
                     p_ref = config_obj.precio_metro_dtf
-                    edit_consumo_est = st.number_input("Metros de DTF por prenda", min_value=0.0, step=0.05, value=float(prod_seleccionado.consumo_estampado), key="edit_dtf_input")
+                    edit_consumo_est = st.number_input("Metros de DTF por prenda", min_value=0.0, step=0.05, value=float(prod_seleccionado.consumo_estampado), key=f"p_dtf_{prod_seleccionado.id}")
                     st.info(f"Precio de referencia: **${p_ref:,.2f} / metro**")
                 elif edit_tecnica == "Serigrafía":
                     p_ref = config_obj.precio_unidad_serigrafia
-                    edit_consumo_est = st.number_input("Cantidad de estampas por prenda", min_value=0.0, step=1.0, value=float(prod_seleccionado.consumo_estampado), key="edit_seri_input")
+                    edit_consumo_est = st.number_input("Cantidad de estampas por prenda", min_value=0.0, step=1.0, value=float(prod_seleccionado.consumo_estampado), key=f"p_seri_{prod_seleccionado.id}")
+                    st.info(f"Precio de referencia: **${p_ref:,.2f} / unidad**")
+                elif edit_tecnica == "Bordado":
+                    p_ref = config_obj.precio_unidad_bordado
+                    edit_consumo_est = st.number_input("Cantidad de bordados por prenda", min_value=0.0, step=1.0, value=float(prod_seleccionado.consumo_estampado), key=f"p_bord_{prod_seleccionado.id}")
                     st.info(f"Precio de referencia: **${p_ref:,.2f} / unidad**")
                 else:
                     edit_consumo_est = 0.0
                     st.caption("Esta prenda no incluye estampado.")
+
+            st.subheader("Avíos y Accesorios")
+            col_eav1, col_eav2 = st.columns([2, 1])
+            with col_eav1:
+                edit_nombre_avio = st.text_input("Detalle del avío", value=prod_seleccionado.nombre_avio, key=f"p_navio_{prod_seleccionado.id}")
+            with col_eav2:
+                edit_costo_avio = st.number_input("Costo del avío ($ por prenda)", min_value=0.0, step=100.0, value=float(prod_seleccionado.costo_avio), key=f"p_cavio_{prod_seleccionado.id}")
 
             # Vista previa de cambios
             edit_costo_tela = edit_tela.precio_metro * edit_consumo
@@ -251,19 +298,23 @@ if opcion == "Catálogo de Productos":
                 edit_costo_est = edit_consumo_est * config_obj.precio_metro_sublimacion
             elif edit_tecnica == "Serigrafía":
                 edit_costo_est = edit_consumo_est * config_obj.precio_unidad_serigrafia
+            elif edit_tecnica == "Bordado":
+                edit_costo_est = edit_consumo_est * config_obj.precio_unidad_bordado
             else:
                 edit_costo_est = 0.0
 
-            edit_costo_prod = edit_costo_tela + edit_costo_conf + edit_costo_est
+            edit_costo_prod = edit_costo_tela + edit_costo_conf + edit_costo_est + edit_costo_avio
             edit_precio_venta = (edit_costo_prod * config_obj.multiplicador_default) + config_obj.costo_fijo_base
 
             with st.container(border=True):
                 st.write("📊 **Previsualización con los Nuevos Valores**")
-                col_em1, col_em2, col_em3, col_em4 = st.columns(4)
+                col_em1, col_em2, col_em3, col_em4, col_em5, col_em6 = st.columns(6)
                 col_em1.metric("Costo Tela", f"${edit_costo_tela:,.2f}")
-                col_em2.metric("Costo Estampado", f"${edit_costo_est:,.2f}")
-                col_em3.metric("Costo Producción", f"${edit_costo_prod:,.2f}")
-                col_em4.metric("Nuevo Precio Venta", f"${edit_precio_venta:,.2f}")
+                col_em2.metric("Confección", f"${edit_costo_conf:,.2f}")
+                col_em3.metric("Estampado", f"${edit_costo_est:,.2f}")
+                col_em4.metric("Avíos", f"${edit_costo_avio:,.2f}")
+                col_em5.metric("Costo Producción", f"${edit_costo_prod:,.2f}")
+                col_em6.metric("Nuevo Precio Venta", f"${edit_precio_venta:,.2f}")
 
             col_btn_edit, col_btn_del = st.columns([2, 1])
             with col_btn_edit:
@@ -275,15 +326,20 @@ if opcion == "Catálogo de Productos":
                         consumo=edit_consumo,
                         costo_confeccion=edit_costo_conf,
                         tipo_estampado=edit_tecnica,
-                        consumo_estampado=edit_consumo_est
+                        consumo_estampado=edit_consumo_est,
+                        nombre_avio=edit_nombre_avio.strip(),
+                        costo_avio=edit_costo_avio
                     )
-                    st.success(f"Prenda '{edit_nombre}' actualizada correctamente.")
+                    st.session_state["prod_edit_id"] = prod_seleccionado.id
+                    st.session_state["msg_exito_prod"] = f"Prenda '{edit_nombre}' actualizada correctamente."
                     st.rerun()
 
             with col_btn_del:
                 if st.button("🗑️ Eliminar Prenda del Catálogo", type="secondary"):
                     db.eliminar_producto(prod_seleccionado.id)
-                    st.success(f"Prenda eliminada del catálogo.")
+                    if "prod_edit_id" in st.session_state:
+                        del st.session_state["prod_edit_id"]
+                    st.session_state["msg_exito_prod"] = "Prenda eliminada del catálogo."
                     st.rerun()
 
 
@@ -317,7 +373,8 @@ elif opcion == "Catálogo de Telas":
                 "Nombre": t.nombre, 
                 "Precio/Kg": f"${t.precio_kilo:,.2f}", 
                 "Rendimiento (m/kg)": f"{t.rendimiento:.2f}",
-                "Costo/Metro": f"${t.precio_metro:,.2f}"
+                "Costo/Metro": f"${t.precio_metro:,.2f}",
+                "Descripción": t.descripcion or "-"
             } for t in telas_mostradas]
             st.dataframe(tabla_telas, width="stretch")
         else:
@@ -334,6 +391,8 @@ elif opcion == "Catálogo de Telas":
             with col_nt2:
                 rendimiento = st.number_input("Rendimiento (metros por kilo)", min_value=0.1, step=0.1, value=3.0)
 
+            desc_tela = st.text_area("Descripción de la tela (opcional)", placeholder="Composición, textura, usos recomendados...", height=70)
+
             costo_metro_est = precio / rendimiento if rendimiento > 0 else 0.0
             st.info(f"💡 **Costo estimado por metro:** ${costo_metro_est:,.2f}")
 
@@ -341,29 +400,45 @@ elif opcion == "Catálogo de Telas":
                 if not nombre.strip():
                     st.error("Por favor, ingresá un nombre para la tela.")
                 else:
-                    db.agregar_tela(nombre.strip(), precio, rendimiento)
+                    db.agregar_tela(nombre.strip(), precio, rendimiento, desc_tela.strip())
                     st.success(f"Tela '{nombre.strip()}' guardada exitosamente.")
                     st.rerun()
 
     # --- PESTAÑA 3: EDITAR / ACTUALIZAR TELA ---
     with tab_telas_editar:
         st.subheader("Editar o Modificar Tela Existente")
+
+        if "msg_exito_tela" in st.session_state:
+            st.success(st.session_state.pop("msg_exito_tela"))
+
         if not telas:
             st.warning("No hay telas disponibles para editar.")
         else:
+            idx_tela_sel = 0
+            if "tela_edit_id" in st.session_state:
+                for i, t in enumerate(telas):
+                    if t.id == st.session_state["tela_edit_id"]:
+                        idx_tela_sel = i
+                        break
+
             tela_a_editar = st.selectbox(
                 "Seleccionar Tela para Modificar", 
                 telas, 
+                index=idx_tela_sel,
+                key="selector_tela_editar",
                 format_func=lambda x: f"{x.nombre} (${x.precio_kilo:,.2f}/kg - Rend: {x.rendimiento} m)"
             )
+            st.session_state["tela_edit_id"] = tela_a_editar.id
             
             with st.form("form_editar_tela"):
                 col_et1, col_et2 = st.columns(2)
                 with col_et1:
-                    edit_nombre = st.text_input("Nombre de la tela", value=tela_a_editar.nombre)
-                    edit_precio = st.number_input("Precio por Kilo ($)", min_value=0.0, step=500.0, value=float(tela_a_editar.precio_kilo))
+                    edit_nombre = st.text_input("Nombre de la tela", value=tela_a_editar.nombre, key=f"t_nom_{tela_a_editar.id}")
+                    edit_precio = st.number_input("Precio por Kilo ($)", min_value=0.0, step=500.0, value=float(tela_a_editar.precio_kilo), key=f"t_pre_{tela_a_editar.id}")
                 with col_et2:
-                    edit_rendimiento = st.number_input("Rendimiento (metros por kilo)", min_value=0.1, step=0.1, value=float(tela_a_editar.rendimiento))
+                    edit_rendimiento = st.number_input("Rendimiento (metros por kilo)", min_value=0.1, step=0.1, value=float(tela_a_editar.rendimiento), key=f"t_ren_{tela_a_editar.id}")
+
+                edit_desc = st.text_area("Descripción de la tela", value=tela_a_editar.descripcion, height=70, key=f"t_desc_{tela_a_editar.id}")
 
                 nuevo_costo_m = edit_precio / edit_rendimiento if edit_rendimiento > 0 else 0.0
                 st.info(f"💡 **Nuevo costo resultante por metro:** ${nuevo_costo_m:,.2f}")
@@ -374,13 +449,16 @@ elif opcion == "Catálogo de Telas":
                         if not edit_nombre.strip():
                             st.error("El nombre no puede estar vacío.")
                         else:
-                            db.actualizar_tela(tela_a_editar.id, edit_nombre.strip(), edit_precio, edit_rendimiento)
-                            st.success(f"Tela '{edit_nombre.strip()}' actualizada correctamente.")
+                            db.actualizar_tela(tela_a_editar.id, edit_nombre.strip(), edit_precio, edit_rendimiento, edit_desc.strip())
+                            st.session_state["tela_edit_id"] = tela_a_editar.id
+                            st.session_state["msg_exito_tela"] = f"Tela '{edit_nombre.strip()}' actualizada correctamente."
                             st.rerun()
                 with col_b2:
                     if st.form_submit_button("🗑️ Eliminar Tela"):
                         db.eliminar_tela(tela_a_editar.id)
-                        st.success(f"Tela eliminada del catálogo.")
+                        if "tela_edit_id" in st.session_state:
+                            del st.session_state["tela_edit_id"]
+                        st.session_state["msg_exito_tela"] = "Tela eliminada del catálogo."
                         st.rerun()
 
 
@@ -399,14 +477,16 @@ elif opcion == "Configuración General":
         with col2:
             nuevo_fijo = st.number_input("Costo Fijo Base por Prenda ($)", value=float(config_actual["costo_fijo"]), step=500.0)
             
-        st.subheader("2. Precios de Técnicas de Estampado")
-        col3, col4, col5 = st.columns(3)
+        st.subheader("2. Precios de Técnicas de Estampado y Terminación")
+        col3, col4, col5, col6 = st.columns(4)
         with col3:
             nuevo_dtf = st.number_input("DTF ($ por metro)", value=float(config_actual.get("precio_metro_dtf", 0.0)), min_value=0.0, step=500.0)
         with col4:
             nuevo_sub = st.number_input("Sublimación ($ por metro)", value=float(config_actual.get("precio_metro_sublimacion", 0.0)), min_value=0.0, step=500.0)
         with col5:
-            nuevo_seri = st.number_input("Serigrafía ($ por unidad/estampa)", value=float(config_actual.get("precio_unidad_serigrafia", 0.0)), min_value=0.0, step=500.0)
+            nuevo_seri = st.number_input("Serigrafía ($ por unidad)", value=float(config_actual.get("precio_unidad_serigrafia", 0.0)), min_value=0.0, step=500.0)
+        with col6:
+            nuevo_bord = st.number_input("Bordado ($ por unidad)", value=float(config_actual.get("precio_unidad_bordado", 0.0)), min_value=0.0, step=500.0)
 
         st.subheader("3. Observaciones y Condiciones para los PDFs")
         nueva_desc_pdf = st.text_area(
@@ -417,7 +497,7 @@ elif opcion == "Configuración General":
         )
 
         if st.form_submit_button("Actualizar Valores", type="primary"):
-            db.actualizar_configuracion(nuevo_fijo, nuevo_mult, nuevo_dtf, nuevo_sub, nuevo_seri, nueva_desc_pdf.strip())
+            db.actualizar_configuracion(nuevo_fijo, nuevo_mult, nuevo_dtf, nuevo_sub, nuevo_seri, nuevo_bord, nueva_desc_pdf.strip())
             st.success("Configuración actualizada correctamente.")
             st.rerun()
 

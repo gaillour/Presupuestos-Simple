@@ -43,6 +43,7 @@ class Config:
     precio_metro_dtf: float = 0.0
     precio_metro_sublimacion: float = 0.0
     precio_unidad_serigrafia: float = 0.0
+    precio_unidad_bordado: float = 0.0
     descripcion_pdf: str = "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."
 
 @dataclass
@@ -51,6 +52,7 @@ class Tela:
     nombre: str
     precio_kilo: float
     rendimiento: float
+    descripcion: str = ""
 
     @property
     def precio_metro(self) -> float:
@@ -67,6 +69,8 @@ class Producto:
     costo_confeccion: float
     tipo_estampado: str = "Ninguno"
     consumo_estampado: float = 0.0
+    nombre_avio: str = ""
+    costo_avio: float = 0.0
 
     @property
     def costo_tela(self) -> float:
@@ -74,10 +78,12 @@ class Producto:
 
     @property
     def costo_base(self) -> float:
-        # Tela + Confección (costo base previo a estampado)
-        return self.costo_tela + self.costo_confeccion
+        # Tela + Confección + Avíos
+        return self.costo_tela + self.costo_confeccion + self.costo_avio
 
     def costo_estampado(self, config: Config) -> float:
+        if not self.tipo_estampado or self.tipo_estampado == "Ninguno" or self.consumo_estampado <= 0:
+            return 0.0
         tipo = normalizar_texto(self.tipo_estampado)
         if tipo == "dtf":
             return self.consumo_estampado * config.precio_metro_dtf
@@ -85,10 +91,12 @@ class Producto:
             return self.consumo_estampado * config.precio_metro_sublimacion
         elif tipo == "serigrafia":
             return self.consumo_estampado * config.precio_unidad_serigrafia
+        elif tipo == "bordado":
+            return self.consumo_estampado * config.precio_unidad_bordado
         return 0.0
 
     def costo_produccion(self, config: Config) -> float:
-        # Costo total unitario de producción: Tela + Confección + Estampado
+        # Costo total unitario de producción: Tela + Confección + Avíos + Estampado
         return self.costo_base + self.costo_estampado(config)
 
     def precio_venta(self, config: Config) -> float:
@@ -105,7 +113,7 @@ class ItemPresupuesto:
     
     @property
     def costo_base_unitario(self) -> float:
-        # Solo suma los costos puros (Tela + Confección + Estampado)
+        # Suma costos puros (Tela + Confección + Avíos + Estampado)
         return self.producto.costo_base + self.costo_estampado
 
 @dataclass
@@ -149,7 +157,8 @@ class Database:
                 id=t["id"],
                 nombre=t["nombre"],
                 precio_kilo=t["precio_kilo"],
-                rendimiento=t["rendimiento"]
+                rendimiento=t["rendimiento"],
+                descripcion=t.get("descripcion") or ""
             ))
         return telas
 
@@ -165,12 +174,15 @@ class Database:
                 id=tela_data["id"],
                 nombre=tela_data["nombre"],
                 precio_kilo=tela_data["precio_kilo"],
-                rendimiento=tela_data["rendimiento"]
+                rendimiento=tela_data["rendimiento"],
+                descripcion=tela_data.get("descripcion") or ""
             )
             
             costo_conf = p.get("costo_confeccion", 0.0)
             tipo_est = p.get("tipo_estampado") or "Ninguno"
             consumo_est = float(p.get("consumo_estampado") or 0.0)
+            nombre_av = p.get("nombre_avio") or ""
+            costo_av = float(p.get("costo_avio") or 0.0)
 
             productos.append(Producto(
                 id=p["id"],
@@ -179,7 +191,9 @@ class Database:
                 consumo_metros=p["consumo_metros"],
                 costo_confeccion=costo_conf,
                 tipo_estampado=tipo_est,
-                consumo_estampado=consumo_est
+                consumo_estampado=consumo_est,
+                nombre_avio=nombre_av,
+                costo_avio=costo_av
             ))
         return productos
 
@@ -231,51 +245,79 @@ class Database:
             "precio_kilo": nuevo_precio
         }).eq("id", tela_id).execute()
 
-    def actualizar_tela(self, tela_id: int, nombre: str, precio_kilo: float, rendimiento: float):
-        self.client.table("telas").update({
+    def actualizar_tela(self, tela_id: int, nombre: str, precio_kilo: float, rendimiento: float, descripcion: str = ""):
+        datos = {
             "nombre": nombre,
             "precio_kilo": precio_kilo,
-            "rendimiento": rendimiento
-        }).eq("id", tela_id).execute()
+            "rendimiento": rendimiento,
+            "descripcion": descripcion
+        }
+        try:
+            self.client.table("telas").update(datos).eq("id", tela_id).execute()
+        except Exception:
+            datos_fallback = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento}
+            self.client.table("telas").update(datos_fallback).eq("id", tela_id).execute()
 
     def eliminar_tela(self, tela_id: int):
         self.client.table("telas").delete().eq("id", tela_id).execute()
 
 # --- MÉTODOS DE INSERCIÓN Y GESTIÓN DE PRODUCTOS Y TELAS ---
-    def agregar_tela(self, nombre: str, precio_kilo: float, rendimiento: float):
-        self.client.table("telas").insert({
-            "nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento
-        }).execute()
+    def agregar_tela(self, nombre: str, precio_kilo: float, rendimiento: float, descripcion: str = ""):
+        datos = {
+            "nombre": nombre, 
+            "precio_kilo": precio_kilo, 
+            "rendimiento": rendimiento,
+            "descripcion": descripcion
+        }
+        try:
+            self.client.table("telas").insert(datos).execute()
+        except Exception:
+            datos_fallback = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento}
+            self.client.table("telas").insert(datos_fallback).execute()
 
-    def agregar_producto(self, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0):
+    def agregar_producto(self, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0, nombre_avio: str = "", costo_avio: float = 0.0):
         datos = {
             "nombre": nombre, 
             "tela_id": tela_id, 
             "consumo_metros": consumo,
             "costo_confeccion": costo_confeccion,
             "tipo_estampado": tipo_estampado,
-            "consumo_estampado": consumo_estampado
+            "consumo_estampado": consumo_estampado,
+            "nombre_avio": nombre_avio,
+            "costo_avio": costo_avio
         }
         try:
             self.client.table("productos").insert(datos).execute()
         except Exception:
-            # Fallback en caso de que aún no se hayan creado las columnas en Supabase
             datos_fallback = {
                 "nombre": nombre, 
                 "tela_id": tela_id, 
                 "consumo_metros": consumo,
-                "costo_confeccion": costo_confeccion
+                "costo_confeccion": costo_confeccion,
+                "tipo_estampado": tipo_estampado,
+                "consumo_estampado": consumo_estampado
             }
-            self.client.table("productos").insert(datos_fallback).execute()
+            try:
+                self.client.table("productos").insert(datos_fallback).execute()
+            except Exception:
+                datos_base = {
+                    "nombre": nombre, 
+                    "tela_id": tela_id, 
+                    "consumo_metros": consumo, 
+                    "costo_confeccion": costo_confeccion
+                }
+                self.client.table("productos").insert(datos_base).execute()
 
-    def actualizar_producto(self, producto_id: int, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0):
+    def actualizar_producto(self, producto_id: int, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0, nombre_avio: str = "", costo_avio: float = 0.0):
         datos = {
             "nombre": nombre, 
             "tela_id": tela_id, 
             "consumo_metros": consumo,
             "costo_confeccion": costo_confeccion,
             "tipo_estampado": tipo_estampado,
-            "consumo_estampado": consumo_estampado
+            "consumo_estampado": consumo_estampado,
+            "nombre_avio": nombre_avio,
+            "costo_avio": costo_avio
         }
         try:
             self.client.table("productos").update(datos).eq("id", producto_id).execute()
@@ -284,9 +326,20 @@ class Database:
                 "nombre": nombre, 
                 "tela_id": tela_id, 
                 "consumo_metros": consumo,
-                "costo_confeccion": costo_confeccion
+                "costo_confeccion": costo_confeccion,
+                "tipo_estampado": tipo_estampado,
+                "consumo_estampado": consumo_estampado
             }
-            self.client.table("productos").update(datos_fallback).eq("id", producto_id).execute()
+            try:
+                self.client.table("productos").update(datos_fallback).eq("id", producto_id).execute()
+            except Exception:
+                datos_base = {
+                    "nombre": nombre, 
+                    "tela_id": tela_id, 
+                    "consumo_metros": consumo, 
+                    "costo_confeccion": costo_confeccion
+                }
+                self.client.table("productos").update(datos_base).eq("id", producto_id).execute()
 
     def eliminar_producto(self, producto_id: int):
         self.client.table("productos").delete().eq("id", producto_id).execute()
@@ -321,10 +374,11 @@ class Database:
             "precio_metro_dtf": estampados_dict.get("dtf", 0.0),
             "precio_metro_sublimacion": estampados_dict.get("sublimacion", 0.0),
             "precio_unidad_serigrafia": estampados_dict.get("serigrafia", 0.0),
+            "precio_unidad_bordado": estampados_dict.get("bordado", 0.0),
             "descripcion_pdf": desc_pdf
         }
 
-    def actualizar_configuracion(self, costo_fijo: float, multiplicador: float, precio_dtf: float = 0.0, precio_sublimacion: float = 0.0, precio_serigrafia: float = 0.0, descripcion_pdf: str = ""):
+    def actualizar_configuracion(self, costo_fijo: float, multiplicador: float, precio_dtf: float = 0.0, precio_sublimacion: float = 0.0, precio_serigrafia: float = 0.0, precio_bordado: float = 0.0, descripcion_pdf: str = ""):
         guardar_config_extra({"descripcion_pdf": descripcion_pdf})
         try:
             self.client.table("configuracion").update({
@@ -353,6 +407,7 @@ class Database:
             ("DTF", "dtf", precio_dtf),
             ("Sublimación", "sublimacion", precio_sublimacion),
             ("Serigrafía", "serigrafia", precio_serigrafia),
+            ("Bordado", "bordado", precio_bordado),
         ]
 
         for nombre_display, clave_norm, costo in valores_nuevos:
@@ -395,7 +450,7 @@ def generar_pdf_presupuesto(presupuesto_o_cliente, items: list = None, total: fl
             # Membrete con marca SIMPLE destacada
             self.set_font("Helvetica", "B", 26)
             self.set_text_color(18, 30, 49)
-            self.cell(0, 11, "SIMPLE", new_x="LMARGIN", new_y="NEXT", align="L")
+            self.cell(0, 11, "SIMPLE MDQ", new_x="LMARGIN", new_y="NEXT", align="L")
             self.set_font("Helvetica", "B", 12)
             self.set_text_color(71, 85, 105)
             self.cell(0, 6, "PRESUPUESTO / COTIZACION", new_x="LMARGIN", new_y="NEXT", align="L")
