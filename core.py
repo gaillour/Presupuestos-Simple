@@ -42,6 +42,18 @@ def seguro_float(val, default: float = 0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+def mensaje_error_amigable(e: Exception, accion: str = "la operación") -> str:
+    texto = str(e).lower()
+    if "duplicate key" in texto or "unique constraint" in texto or "23505" in texto or "already exists" in texto:
+        return "Ya existe un registro con ese nombre en el sistema. Por favor ingresá un nombre diferente."
+    if "foreign key" in texto or "violates foreign key" in texto or "23503" in texto:
+        return "No se puede eliminar o modificar este elemento porque está siendo utilizado por otras prendas o presupuestos."
+    if "invalid input syntax" in texto or "22p02" in texto:
+        return "Uno de los valores numéricos ingresados no tiene un formato válido."
+    if "permission" in texto or "security" in texto or "row-level security" in texto or "jwt" in texto or "unauthorized" in texto:
+        return "Error de permisos en la base de datos. Verificá la conexión y las credenciales."
+    return f"No se pudo completar {accion}. Por favor verificá los datos e intentá nuevamente."
+
 # --- CLASES DE DATOS (MODELOS) ---
 
 @dataclass

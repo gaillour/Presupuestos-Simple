@@ -1,8 +1,9 @@
 import streamlit as st
+from datetime import datetime
 import importlib
 import core
 importlib.reload(core)
-from core import Database, ItemPresupuesto, Presupuesto, Config, generar_pdf_presupuesto, seguro_float
+from core import Database, ItemPresupuesto, Presupuesto, Config, generar_pdf_presupuesto, seguro_float, mensaje_error_amigable
 
 
 # 0 - login
@@ -69,6 +70,11 @@ if opcion == "Catálogo de Productos":
     st.title("👕 Catálogo de Productos")
     st.caption("Gestioná y mantené actualizados los costos de producción y precios de venta de tus prendas.")
 
+    if "msg_exito_prod" in st.session_state:
+        st.success(st.session_state.pop("msg_exito_prod"))
+    if "msg_error_prod" in st.session_state:
+        st.error(st.session_state.pop("msg_error_prod"))
+
     tab_catalogo, tab_crear, tab_editar = st.tabs([
         "📋 Catálogo y Precios", 
         "➕ Nuevo Producto", 
@@ -132,6 +138,9 @@ if opcion == "Catálogo de Productos":
     # --- PESTAÑA 2: NUEVO PRODUCTO ---
     with tab_crear:
         st.subheader("Registrar Nueva Prenda en el Catálogo")
+        if "msg_crear_prod_exito" in st.session_state:
+            st.success(st.session_state.pop("msg_crear_prod_exito"))
+
         if not telas:
             st.warning("⚠️ Debés cargar al menos una tela en el Catálogo de Telas antes de crear productos.")
         else:
@@ -199,21 +208,28 @@ if opcion == "Catálogo de Productos":
                 col_m6.metric("Precio Venta Catálogo", f"${precio_venta_prev:,.2f}")
 
             if st.button("💾 Guardar Producto en Catálogo", type="primary"):
-                if not nuevo_nombre.strip():
-                    st.error("Por favor, ingresá el nombre de la prenda.")
+                nom = nuevo_nombre.strip()
+                if not nom:
+                    st.error("⚠️ Por favor, ingresá el nombre de la prenda.")
+                elif any(p.nombre.strip().lower() == nom.lower() for p in productos):
+                    st.warning(f"⚠️ Ya existe una prenda registrada con el nombre '{nom}'. Podés modificarla en la pestaña 'Editar / Eliminar' o elegir otro nombre.")
                 else:
-                    db.agregar_producto(
-                        nombre=nuevo_nombre.strip(),
-                        tela_id=nueva_tela.id,
-                        consumo=nuevo_consumo,
-                        costo_confeccion=nuevo_costo_conf,
-                        tipo_estampado=nueva_tecnica,
-                        consumo_estampado=nuevo_consumo_est,
-                        nombre_avio=nuevo_nombre_avio.strip(),
-                        costo_avio=nuevo_costo_avio
-                    )
-                    st.success(f"¡Producto '{nuevo_nombre}' agregado al catálogo con éxito!")
-                    st.rerun()
+                    try:
+                        db.agregar_producto(
+                            nombre=nom,
+                            tela_id=nueva_tela.id,
+                            consumo=nuevo_consumo,
+                            costo_confeccion=nuevo_costo_conf,
+                            tipo_estampado=nueva_tecnica,
+                            consumo_estampado=nuevo_consumo_est,
+                            nombre_avio=nuevo_nombre_avio.strip(),
+                            costo_avio=nuevo_costo_avio
+                        )
+                        st.session_state["msg_crear_prod_exito"] = f"✅ ¡Prenda '{nom}' agregada al catálogo con éxito! Ya podés verla en la lista de precios o ingresar otra."
+                        st.session_state["msg_exito_prod"] = f"✅ ¡Prenda '{nom}' registrada en el catálogo!"
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"⚠️ {mensaje_error_amigable(e, 'el registro de la prenda')}")
 
     # --- PESTAÑA 3: EDITAR / ELIMINAR ---
     with tab_editar:
@@ -321,34 +337,51 @@ if opcion == "Catálogo de Productos":
             col_btn_edit, col_btn_del = st.columns([2, 1])
             with col_btn_edit:
                 if st.button("💾 Guardar Cambios en la Prenda", type="primary"):
-                    db.actualizar_producto(
-                        producto_id=prod_seleccionado.id,
-                        nombre=edit_nombre.strip(),
-                        tela_id=edit_tela.id,
-                        consumo=edit_consumo,
-                        costo_confeccion=edit_costo_conf,
-                        tipo_estampado=edit_tecnica,
-                        consumo_estampado=edit_consumo_est,
-                        nombre_avio=edit_nombre_avio.strip(),
-                        costo_avio=edit_costo_avio
-                    )
-                    st.session_state["prod_edit_id"] = prod_seleccionado.id
-                    st.session_state["msg_exito_prod"] = f"Prenda '{edit_nombre}' actualizada correctamente."
-                    st.rerun()
+                    nom_edit = edit_nombre.strip()
+                    if not nom_edit:
+                        st.error("⚠️ El nombre de la prenda no puede estar vacío.")
+                    elif any(p.id != prod_seleccionado.id and p.nombre.strip().lower() == nom_edit.lower() for p in productos):
+                        st.warning(f"⚠️ Ya existe otra prenda registrada con el nombre '{nom_edit}'. Elegí un nombre distinto.")
+                    else:
+                        try:
+                            db.actualizar_producto(
+                                producto_id=prod_seleccionado.id,
+                                nombre=nom_edit,
+                                tela_id=edit_tela.id,
+                                consumo=edit_consumo,
+                                costo_confeccion=edit_costo_conf,
+                                tipo_estampado=edit_tecnica,
+                                consumo_estampado=edit_consumo_est,
+                                nombre_avio=edit_nombre_avio.strip(),
+                                costo_avio=edit_costo_avio
+                            )
+                            st.session_state["prod_edit_id"] = prod_seleccionado.id
+                            st.session_state["msg_exito_prod"] = f"✅ Prenda '{nom_edit}' actualizada correctamente."
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"⚠️ {mensaje_error_amigable(e, 'la actualización de la prenda')}")
 
             with col_btn_del:
                 if st.button("🗑️ Eliminar Prenda del Catálogo", type="secondary"):
-                    db.eliminar_producto(prod_seleccionado.id)
-                    if "prod_edit_id" in st.session_state:
-                        del st.session_state["prod_edit_id"]
-                    st.session_state["msg_exito_prod"] = "Prenda eliminada del catálogo."
-                    st.rerun()
+                    try:
+                        db.eliminar_producto(prod_seleccionado.id)
+                        if "prod_edit_id" in st.session_state:
+                            del st.session_state["prod_edit_id"]
+                        st.session_state["msg_exito_prod"] = f"✅ Prenda '{prod_seleccionado.nombre}' eliminada del catálogo."
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"⚠️ {mensaje_error_amigable(e, 'la eliminación de la prenda')}")
 
 
 # --- 4. MÓDULO: CATÁLOGO DE TELAS ---
 elif opcion == "Catálogo de Telas":
     st.title("🧵 Catálogo de Telas")
     st.caption("Gestioná los precios por kilo y rendimiento de tus telas. Al cambiar un precio, se actualizan todas las prendas asociadas.")
+
+    if "msg_exito_tela" in st.session_state:
+        st.success(st.session_state.pop("msg_exito_tela"))
+    if "msg_error_tela" in st.session_state:
+        st.error(st.session_state.pop("msg_error_tela"))
     
     tab_telas_catalogo, tab_telas_nueva, tab_telas_editar = st.tabs([
         "📋 Catálogo de Telas", 
@@ -357,6 +390,7 @@ elif opcion == "Catálogo de Telas":
     ])
 
     telas = db.obtener_telas()
+    productos = db.obtener_productos()
 
     # --- PESTAÑA 1: CATÁLOGO Y PRECIOS DE TELAS ---
     with tab_telas_catalogo:
@@ -385,6 +419,9 @@ elif opcion == "Catálogo de Telas":
     # --- PESTAÑA 2: NUEVA TELA ---
     with tab_telas_nueva:
         st.subheader("Cargar Nueva Tela")
+        if "msg_nueva_tela_exito" in st.session_state:
+            st.success(st.session_state.pop("msg_nueva_tela_exito"))
+
         with st.form("form_nueva_tela"):
             col_nt1, col_nt2 = st.columns(2)
             with col_nt1:
@@ -399,19 +436,23 @@ elif opcion == "Catálogo de Telas":
             st.info(f"💡 **Costo estimado por metro:** ${costo_metro_est:,.2f}")
 
             if st.form_submit_button("➕ Guardar Tela", type="primary"):
-                if not nombre.strip():
-                    st.error("Por favor, ingresá un nombre para la tela.")
+                nom_tela = nombre.strip()
+                if not nom_tela:
+                    st.error("⚠️ Por favor, ingresá un nombre para la tela.")
+                elif any(t.nombre.strip().lower() == nom_tela.lower() for t in telas):
+                    st.warning(f"⚠️ Ya existe una tela registrada con el nombre '{nom_tela}'. Podés actualizarla en la pestaña 'Editar / Actualizar'.")
                 else:
-                    db.agregar_tela(nombre.strip(), precio, rendimiento, desc_tela.strip())
-                    st.success(f"Tela '{nombre.strip()}' guardada exitosamente.")
-                    st.rerun()
+                    try:
+                        db.agregar_tela(nom_tela, precio, rendimiento, desc_tela.strip())
+                        st.session_state["msg_nueva_tela_exito"] = f"✅ ¡Tela '{nom_tela}' guardada exitosamente en el catálogo!"
+                        st.session_state["msg_exito_tela"] = f"✅ ¡Tela '{nom_tela}' guardada exitosamente!"
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"⚠️ {mensaje_error_amigable(e, 'el guardado de la tela')}")
 
     # --- PESTAÑA 3: EDITAR / ACTUALIZAR TELA ---
     with tab_telas_editar:
         st.subheader("Editar o Modificar Tela Existente")
-
-        if "msg_exito_tela" in st.session_state:
-            st.success(st.session_state.pop("msg_exito_tela"))
 
         if not telas:
             st.warning("No hay telas disponibles para editar.")
@@ -448,26 +489,44 @@ elif opcion == "Catálogo de Telas":
                 col_b1, col_b2 = st.columns([2, 1])
                 with col_b1:
                     if st.form_submit_button("💾 Guardar Cambios en la Tela", type="primary"):
-                        if not edit_nombre.strip():
-                            st.error("El nombre no puede estar vacío.")
+                        nom_t_edit = edit_nombre.strip()
+                        if not nom_t_edit:
+                            st.error("⚠️ El nombre no puede estar vacío.")
+                        elif any(t.id != tela_a_editar.id and t.nombre.strip().lower() == nom_t_edit.lower() for t in telas):
+                            st.warning(f"⚠️ Ya existe otra tela registrada con el nombre '{nom_t_edit}'.")
                         else:
-                            db.actualizar_tela(tela_a_editar.id, edit_nombre.strip(), edit_precio, edit_rendimiento, edit_desc.strip())
-                            st.session_state["tela_edit_id"] = tela_a_editar.id
-                            st.session_state["msg_exito_tela"] = f"Tela '{edit_nombre.strip()}' actualizada correctamente."
-                            st.rerun()
+                            try:
+                                db.actualizar_tela(tela_a_editar.id, nom_t_edit, edit_precio, edit_rendimiento, edit_desc.strip())
+                                st.session_state["tela_edit_id"] = tela_a_editar.id
+                                st.session_state["msg_exito_tela"] = f"✅ Tela '{nom_t_edit}' actualizada correctamente."
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"⚠️ {mensaje_error_amigable(e, 'la actualización de la tela')}")
                 with col_b2:
                     if st.form_submit_button("🗑️ Eliminar Tela"):
-                        db.eliminar_tela(tela_a_editar.id)
-                        if "tela_edit_id" in st.session_state:
-                            del st.session_state["tela_edit_id"]
-                        st.session_state["msg_exito_tela"] = "Tela eliminada del catálogo."
-                        st.rerun()
+                        prods_usando = [p.nombre for p in productos if p.tela.id == tela_a_editar.id]
+                        if prods_usando:
+                            st.error(f"⚠️ No podés eliminar '{tela_a_editar.nombre}' porque está asignada a las prendas: {', '.join(prods_usando)}. Modificá esas prendas antes de eliminarla.")
+                        else:
+                            try:
+                                db.eliminar_tela(tela_a_editar.id)
+                                if "tela_edit_id" in st.session_state:
+                                    del st.session_state["tela_edit_id"]
+                                st.session_state["msg_exito_tela"] = f"✅ Tela '{tela_a_editar.nombre}' eliminada del catálogo."
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"⚠️ {mensaje_error_amigable(e, 'la eliminación de la tela')}")
 
 
 # --- 5. MÓDULO: CONFIGURACIÓN GENERAL ---
 elif opcion == "Configuración General":
     st.title("⚙️ Configuración General")
     st.caption("Valores globales del negocio. Al modificarlos, los precios de venta y costos de estampado de todo el catálogo se recalculan automáticamente.")
+
+    if "msg_exito_config" in st.session_state:
+        st.success(st.session_state.pop("msg_exito_config"))
+    if "msg_error_config" in st.session_state:
+        st.error(st.session_state.pop("msg_error_config"))
     
     config_actual = db.obtener_configuracion()
     
@@ -499,15 +558,23 @@ elif opcion == "Configuración General":
         )
 
         if st.form_submit_button("Actualizar Valores", type="primary"):
-            db.actualizar_configuracion(nuevo_fijo, nuevo_mult, nuevo_dtf, nuevo_sub, nuevo_seri, nuevo_bord, nueva_desc_pdf.strip())
-            st.success("Configuración actualizada correctamente.")
-            st.rerun()
+            try:
+                db.actualizar_configuracion(nuevo_fijo, nuevo_mult, nuevo_dtf, nuevo_sub, nuevo_seri, nuevo_bord, nueva_desc_pdf.strip())
+                st.session_state["msg_exito_config"] = "✅ Configuración actualizada correctamente."
+                st.rerun()
+            except Exception as e:
+                st.error(f"⚠️ {mensaje_error_amigable(e, 'la actualización de la configuración')}")
 
 
 # --- 6. MÓDULO: GENERADOR DE PRESUPUESTOS (SECUNDARIO) ---
 elif opcion == "Generador de Presupuestos":
     st.title("🛒 Generador de Presupuestos")
     st.caption("Herramienta comercial para cotizar pedidos a clientes y consultar el historial de cotizaciones.")
+
+    if "msg_exito_presupuesto" in st.session_state:
+        st.success(st.session_state.pop("msg_exito_presupuesto"))
+    if "msg_error_presupuesto" in st.session_state:
+        st.error(st.session_state.pop("msg_error_presupuesto"))
 
     tab_nuevo_p, tab_historial_p = st.tabs(["🛒 Nuevo Presupuesto", "📂 Presupuestos Guardados"])
 
@@ -546,7 +613,7 @@ elif opcion == "Generador de Presupuestos":
                     costo_estampado=c_estampado_unit
                 )
                 st.session_state.carrito.append(nuevo_item)
-                st.success(f"Agregado: {cantidad}x {prod_sel.nombre}")
+                st.success(f"✅ Agregado al pedido: {cantidad}x {prod_sel.nombre}")
                 st.rerun()
 
             if len(st.session_state.carrito) > 0:
@@ -600,13 +667,18 @@ elif opcion == "Generador de Presupuestos":
                     )
                 with col_btn3:
                     if st.button("💾 Guardar Presupuesto", type="primary"):
-                        if not cliente_ref:
-                            st.error("Por favor, ingresá el nombre del cliente.")
+                        if not cliente_ref.strip():
+                            st.error("⚠️ Por favor, ingresá el nombre del cliente.")
+                        elif len(st.session_state.carrito) == 0:
+                            st.error("⚠️ El pedido no tiene prendas agregadas.")
                         else:
-                            db.guardar_presupuesto(presupuesto_actual)
-                            st.session_state.carrito.clear()
-                            st.success("¡Presupuesto guardado exitosamente en el historial!")
-                            st.rerun()
+                            try:
+                                db.guardar_presupuesto(presupuesto_actual)
+                                st.session_state.carrito.clear()
+                                st.session_state["msg_exito_presupuesto"] = f"✅ ¡Presupuesto para '{cliente_ref.strip()}' guardado exitosamente en el historial!"
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"⚠️ {mensaje_error_amigable(e, 'el guardado del presupuesto')}")
 
     # --- PESTAÑA 2: HISTORIAL DE PRESUPUESTOS GUARDADOS ---
     with tab_historial_p:
@@ -693,6 +765,9 @@ elif opcion == "Generador de Presupuestos":
                             )
                         with col_hp3:
                             if st.button("🗑️ Eliminar", key=f"btn_del_p_{p['id']}", type="secondary"):
-                                db.eliminar_presupuesto(p["id"])
-                                st.success("Presupuesto eliminado.")
-                                st.rerun()
+                                try:
+                                    db.eliminar_presupuesto(p["id"])
+                                    st.session_state["msg_exito_presupuesto"] = f"✅ Presupuesto #{p['id']} ({cliente_nombre}) eliminado del historial."
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"⚠️ {mensaje_error_amigable(e, 'la eliminación del presupuesto')}")
