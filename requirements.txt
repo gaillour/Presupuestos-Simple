@@ -1,3 +1,6 @@
-streamlit==1.62.0
-supabase==2.31.0
-fpdf2==2.8.8
+fastapi
+uvicorn
+streamlit
+supabase
+fpdf2
+pydantic
