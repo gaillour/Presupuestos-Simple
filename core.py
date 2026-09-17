@@ -92,6 +92,7 @@ class Tela:
     precio_kilo: float
     rendimiento: float
     descripcion: str = ""
+    activo: bool = True
 
     @property
     def precio_metro(self) -> float:
@@ -110,6 +111,7 @@ class Producto:
     consumo_estampado: float = 0.0
     nombre_avio: str = ""
     costo_avio: float = 0.0
+    activo: bool = True
 
     @property
     def costo_tela(self) -> float:
@@ -184,12 +186,26 @@ class Presupuesto:
 
 class Database:
     def __init__(self):
-        url: str = st.secrets["SUPABASE_URL"]
-        key: str = st.secrets["SUPABASE_KEY"]
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        if not url or not key:
+            try:
+                url = url or st.secrets.get("SUPABASE_URL")
+                key = key or st.secrets.get("SUPABASE_KEY")
+            except Exception:
+                pass
+        if not url or not key:
+            raise RuntimeError(
+                "Credenciales de Supabase no encontradas. "
+                "Configurá las variables de entorno SUPABASE_URL y SUPABASE_KEY."
+            )
         self.client: Client = create_client(url, key)
 
-    def obtener_telas(self) -> List[Tela]:
-        res = self.client.table("telas").select("*").execute()
+    def obtener_telas(self, solo_activas: bool = True) -> List[Tela]:
+        query = self.client.table("telas").select("*")
+        if solo_activas:
+            query = query.eq("activo", True)
+        res = query.execute()
         telas = []
         for t in res.data:
             telas.append(Tela(
@@ -197,25 +213,31 @@ class Database:
                 nombre=t["nombre"],
                 precio_kilo=t["precio_kilo"],
                 rendimiento=t["rendimiento"],
-                descripcion=t.get("descripcion") or ""
+                descripcion=t.get("descripcion") or "",
+                activo=bool(t.get("activo", True))
             ))
         return telas
 
-    def obtener_productos(self) -> List[Producto]:
-        res = self.client.table("productos").select(
-            "*, telas(*)"
-        ).execute()
+    def obtener_productos(self, solo_activos: bool = True) -> List[Producto]:
+        query = self.client.table("productos").select("*, telas(*)")
+        if solo_activos:
+            query = query.eq("activo", True)
+        res = query.execute()
         
         productos = []
         for p in res.data:
-            tela_data = p["telas"]
-            tela_obj = Tela(
-                id=tela_data["id"],
-                nombre=tela_data["nombre"],
-                precio_kilo=tela_data["precio_kilo"],
-                rendimiento=tela_data["rendimiento"],
-                descripcion=tela_data.get("descripcion") or ""
-            )
+            tela_data = p.get("telas")
+            if tela_data:
+                tela_obj = Tela(
+                    id=tela_data["id"],
+                    nombre=tela_data["nombre"],
+                    precio_kilo=tela_data["precio_kilo"],
+                    rendimiento=tela_data["rendimiento"],
+                    descripcion=tela_data.get("descripcion") or "",
+                    activo=bool(tela_data.get("activo", True))
+                )
+            else:
+                tela_obj = Tela(id=0, nombre="Tela no disponible", precio_kilo=0.0, rendimiento=1.0, descripcion="", activo=False)
             
             costo_conf = p.get("costo_confeccion", 0.0)
             tipo_est = p.get("tipo_estampado") or "Ninguno"
@@ -232,7 +254,8 @@ class Database:
                 tipo_estampado=tipo_est,
                 consumo_estampado=consumo_est,
                 nombre_avio=nombre_av,
-                costo_avio=costo_av
+                costo_avio=costo_av,
+                activo=bool(p.get("activo", True))
             ))
         return productos
 
@@ -246,7 +269,8 @@ class Database:
             "cliente_referencia": presupuesto.cliente,
             "multiplicador": mult_val,
             "costo_fijo": float(presupuesto.costo_fijo_usado),
-            "precio_total": float(presupuesto.total_final)
+            "precio_total": float(presupuesto.total_final),
+            "activo": True
         }
         try:
             res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
@@ -263,21 +287,32 @@ class Database:
                 "presupuesto_id": presupuesto_id,
                 "producto_id": item.producto.id,
                 "cantidad": int(item.cantidad),
-                "precio_unitario": float(presupuesto.precio_unitario_final(item))
+                "precio_unitario": float(presupuesto.precio_unitario_final(item)),
+                "activo": True
             })
         
         self.client.table("presupuesto_detalles").insert(detalles).execute()
         return presupuesto_id
 
-    def obtener_presupuestos(self) -> list:
-        return self.client.table("presupuestos").select("*").order("id", desc=True).execute().data
+    def obtener_presupuestos(self, solo_activos: bool = True) -> list:
+        query = self.client.table("presupuestos").select("*")
+        if solo_activos:
+            query = query.eq("activo", True)
+        return query.order("id", desc=True).execute().data
+
+    def obtener_presupuesto_por_id(self, presupuesto_id: int) -> dict:
+        res = self.client.table("presupuestos").select("*").eq("id", presupuesto_id).execute()
+        return res.data[0] if res.data else None
 
     def obtener_detalles_presupuesto(self, presupuesto_id: int) -> list:
-        return self.client.table("presupuesto_detalles").select("*, productos(id, nombre)").eq("presupuesto_id", presupuesto_id).execute().data
+        return self.client.table("presupuesto_detalles").select(
+            "*, productos(id, nombre, tipo_estampado, activo, telas(id, nombre, activo))"
+        ).eq("presupuesto_id", presupuesto_id).execute().data
 
     def eliminar_presupuesto(self, presupuesto_id: int):
-        self.client.table("presupuesto_detalles").delete().eq("presupuesto_id", presupuesto_id).execute()
-        self.client.table("presupuestos").delete().eq("id", presupuesto_id).execute()
+        # Borrado lógico: se marca activo = False tanto en presupuesto como en sus detalles
+        self.client.table("presupuesto_detalles").update({"activo": False}).eq("presupuesto_id", presupuesto_id).execute()
+        self.client.table("presupuestos").update({"activo": False}).eq("id", presupuesto_id).execute()
     
     def actualizar_precio_tela(self, tela_id: int, nuevo_precio: float):
         self.client.table("telas").update({
@@ -298,21 +333,27 @@ class Database:
             self.client.table("telas").update(datos_fallback).eq("id", tela_id).execute()
 
     def eliminar_tela(self, tela_id: int):
-        self.client.table("telas").delete().eq("id", tela_id).execute()
+        # Borrado lógico: nunca delete
+        self.client.table("telas").update({"activo": False}).eq("id", tela_id).execute()
 
 # --- MÉTODOS DE INSERCIÓN Y GESTIÓN DE PRODUCTOS Y TELAS ---
     def agregar_tela(self, nombre: str, precio_kilo: float, rendimiento: float, descripcion: str = ""):
         datos = {
             "nombre": nombre, 
             "precio_kilo": precio_kilo, 
-            "rendimiento": rendimiento,
-            "descripcion": descripcion
+            "rendimiento": rendimiento, 
+            "descripcion": descripcion,
+            "activo": True
         }
         try:
             self.client.table("telas").insert(datos).execute()
         except Exception:
-            datos_fallback = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento}
-            self.client.table("telas").insert(datos_fallback).execute()
+            datos_fallback = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento, "activo": True}
+            try:
+                self.client.table("telas").insert(datos_fallback).execute()
+            except Exception:
+                datos_base = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento}
+                self.client.table("telas").insert(datos_base).execute()
 
     def agregar_producto(self, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0, nombre_avio: str = "", costo_avio: float = 0.0):
         datos = {
@@ -323,7 +364,8 @@ class Database:
             "tipo_estampado": tipo_estampado,
             "consumo_estampado": consumo_estampado,
             "nombre_avio": nombre_avio,
-            "costo_avio": costo_avio
+            "costo_avio": costo_avio,
+            "activo": True
         }
         try:
             self.client.table("productos").insert(datos).execute()
@@ -334,7 +376,8 @@ class Database:
                 "consumo_metros": consumo,
                 "costo_confeccion": costo_confeccion,
                 "tipo_estampado": tipo_estampado,
-                "consumo_estampado": consumo_estampado
+                "consumo_estampado": consumo_estampado,
+                "activo": True
             }
             try:
                 self.client.table("productos").insert(datos_fallback).execute()
@@ -343,7 +386,8 @@ class Database:
                     "nombre": nombre, 
                     "tela_id": tela_id, 
                     "consumo_metros": consumo, 
-                    "costo_confeccion": costo_confeccion
+                    "costo_confeccion": costo_confeccion,
+                    "activo": True
                 }
                 self.client.table("productos").insert(datos_base).execute()
 
@@ -381,7 +425,8 @@ class Database:
                 self.client.table("productos").update(datos_base).eq("id", producto_id).execute()
 
     def eliminar_producto(self, producto_id: int):
-        self.client.table("productos").delete().eq("id", producto_id).execute()
+        # Borrado lógico: nunca delete
+        self.client.table("productos").update({"activo": False}).eq("id", producto_id).execute()
 
     # --- MÉTODOS AUXILIARES PARA LOS SELECTS ---
     
