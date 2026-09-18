@@ -4,3 +4,4 @@ streamlit
 supabase
 fpdf2
 pydantic
+pyjwt
