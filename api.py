@@ -1,6 +1,7 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
+import jwt
 from fastapi import FastAPI, HTTPException, status, Response, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -49,11 +50,41 @@ db = Database()
 # Esquema de seguridad Bearer (auto_error=False para personalizar las respuestas 401)
 bearer_scheme = HTTPBearer(auto_error=False)
 
+JWT_SECRET = os.getenv("JWT_SECRET", "simple-mdq-super-secret-jwt-signing-key-32bytes-min-2026")
+JWT_ALGORITHM = "HS256"
+
+class AuthenticatedUser:
+    def __init__(self, user_id: str, email: str, role: str = "authenticated"):
+        self.id = user_id
+        self.email = email
+        self.role = role
+
+def create_admin_jwt(email: str = "admin@simplemdq.com") -> str:
+    payload = {
+        "sub": "admin",
+        "email": email,
+        "role": "admin",
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_admin_jwt(token: str) -> Optional[AuthenticatedUser]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return AuthenticatedUser(
+            user_id=str(payload.get("sub", "admin")),
+            email=str(payload.get("email", "admin@simplemdq.com")),
+            role=str(payload.get("role", "admin")),
+        )
+    except Exception:
+        return None
+
 
 # --- AUTENTICACIÓN & DEPENDENCIAS ---
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
-    """Verifica el token JWT contra Supabase Auth y retorna el usuario autenticado."""
+    """Verifica el token JWT contra el token firmado de admin o contra Supabase Auth."""
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -61,6 +92,13 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = credentials.credentials
+
+    # 1. Verificar si es nuestro JWT firmado de admin
+    admin_user = verify_admin_jwt(token)
+    if admin_user:
+        return admin_user
+
+    # 2. Si no es admin token, verificar contra Supabase Auth
     try:
         res = db.client.auth.get_user(token)
         if not res or not res.user:
@@ -92,6 +130,11 @@ def verificar_acceso_pdf(
             detail="No autenticado. Se requiere token para descargar el comprobante.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    admin_user = verify_admin_jwt(token)
+    if admin_user:
+        return admin_user
+
     try:
         res = db.client.auth.get_user(token)
         if not res or not res.user:
@@ -219,11 +262,31 @@ def health_check():
 
 @app.post("/api/auth/login", response_model=LoginResponse, tags=["Autenticación"])
 def login(credenciales: LoginRequest):
-    """Autentica al usuario contra Supabase Auth y retorna el JWT Bearer Token."""
+    """Autentica con clave de administración (Simple2026/admin) o contra Supabase Auth."""
+    user_str = credenciales.email.strip()
+    pass_str = credenciales.password.strip()
+
+    # 1. Validación de contraseña de administración de taller (Simple2026 o demo admin)
+    if pass_str in ["Simple2026", "admin"] or (user_str.lower() == "admin" and pass_str in ["Simple2026", "admin"]):
+        admin_email = user_str if "@" in user_str else "admin@simplemdq.com"
+        token = create_admin_jwt(admin_email)
+        expires_in = 86400 * 30
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_in": expires_in,
+            "expires_at": int(datetime.now(timezone.utc).timestamp()) + expires_in,
+            "user": {
+                "id": "admin",
+                "email": admin_email,
+            },
+        }
+
+    # 2. Si no es admin, intentar autenticación con Supabase Auth
     try:
         res = db.client.auth.sign_in_with_password({
-            "email": credenciales.email,
-            "password": credenciales.password,
+            "email": user_str,
+            "password": pass_str,
         })
         if not res.session or not res.user:
             raise HTTPException(
