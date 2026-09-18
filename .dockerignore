@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+.streamlit/secrets.toml
+.env
+.config_extra.json
+
