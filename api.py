@@ -36,7 +36,6 @@ if frontend_url and frontend_url.strip() not in allowed_origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
     allow_origins=allowed_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
