@@ -210,6 +210,8 @@ class ProductoCreate(BaseModel):
     nombre: str = Field(..., min_length=1, description="Nombre de la prenda / producto")
     tela_id: int = Field(..., description="ID de la tela asociada")
     consumo_metros: float = Field(..., gt=0, description="Consumo de tela en metros por prenda")
+    tela_secundaria_id: Optional[int] = Field(None, description="ID de la segunda tela opcional")
+    consumo_metros_secundaria: float = Field(0.0, ge=0, description="Consumo de la segunda tela en metros")
     costo_confeccion: float = Field(..., ge=0, description="Costo de confección o taller")
     tipo_estampado: str = Field("Ninguno", description="Técnica de estampado: Ninguno, DTF, Sublimación, Serigrafía, Bordado")
     consumo_estampado: float = Field(0.0, ge=0, description="Consumo de estampado (metros o unidades)")
@@ -221,6 +223,8 @@ class ProductoUpdate(BaseModel):
     nombre: str = Field(..., min_length=1)
     tela_id: int
     consumo_metros: float = Field(..., gt=0)
+    tela_secundaria_id: Optional[int] = None
+    consumo_metros_secundaria: float = Field(0.0, ge=0)
     costo_confeccion: float = Field(..., ge=0)
     tipo_estampado: str = "Ninguno"
     consumo_estampado: float = Field(0.0, ge=0)
@@ -473,6 +477,16 @@ def listar_productos(user=Depends(get_current_user)):
             costo_prod = p.costo_produccion(config_obj)
             precio_vta = p.precio_venta(config_obj)
 
+            tela_sec_dict = None
+            if p.tela_secundaria and p.consumo_metros_secundaria > 0:
+                tela_sec_dict = {
+                    "id": p.tela_secundaria.id,
+                    "nombre": p.tela_secundaria.nombre,
+                    "precio_kilo": p.tela_secundaria.precio_kilo,
+                    "rendimiento": p.tela_secundaria.rendimiento,
+                    "precio_metro": round(p.tela_secundaria.precio_metro, 2),
+                }
+
             resultado.append({
                 "id": p.id,
                 "nombre": p.nombre,
@@ -484,6 +498,8 @@ def listar_productos(user=Depends(get_current_user)):
                     "precio_metro": round(p.tela.precio_metro, 2),
                 },
                 "consumo_metros": p.consumo_metros,
+                "tela_secundaria": tela_sec_dict,
+                "consumo_metros_secundaria": p.consumo_metros_secundaria if tela_sec_dict else 0.0,
                 "costo_confeccion": p.costo_confeccion,
                 "tipo_estampado": p.tipo_estampado,
                 "consumo_estampado": p.consumo_estampado,
@@ -515,6 +531,8 @@ def crear_producto(prod: ProductoCreate, user=Depends(get_current_user)):
             consumo_estampado=prod.consumo_estampado,
             nombre_avio=prod.nombre_avio,
             costo_avio=prod.costo_avio,
+            tela_secundaria_id=prod.tela_secundaria_id,
+            consumo_metros_secundaria=prod.consumo_metros_secundaria,
         )
         return {"message": "Producto agregado correctamente"}
     except Exception as e:
@@ -537,6 +555,8 @@ def actualizar_producto(producto_id: int, prod: ProductoUpdate, user=Depends(get
             consumo_estampado=prod.consumo_estampado,
             nombre_avio=prod.nombre_avio,
             costo_avio=prod.costo_avio,
+            tela_secundaria_id=prod.tela_secundaria_id,
+            consumo_metros_secundaria=prod.consumo_metros_secundaria,
         )
         return {"message": "Producto actualizado correctamente"}
     except Exception as e:

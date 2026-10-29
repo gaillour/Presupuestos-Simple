@@ -124,10 +124,22 @@ class Producto:
     nombre_avio: str = ""
     costo_avio: float = 0.0
     activo: bool = True
+    tela_secundaria: Optional[Tela] = None
+    consumo_metros_secundaria: float = 0.0
+
+    @property
+    def costo_tela_principal(self) -> float:
+        return self.tela.precio_metro * self.consumo_metros
+
+    @property
+    def costo_tela_secundaria(self) -> float:
+        if not self.tela_secundaria or self.consumo_metros_secundaria <= 0:
+            return 0.0
+        return self.tela_secundaria.precio_metro * self.consumo_metros_secundaria
 
     @property
     def costo_tela(self) -> float:
-        return self.tela.precio_metro * self.consumo_metros
+        return self.costo_tela_principal + self.costo_tela_secundaria
 
     @property
     def costo_base(self) -> float:
@@ -234,25 +246,24 @@ class Database:
         return telas
 
     def obtener_productos(self, solo_activos: bool = True) -> List[Producto]:
-        query = self.client.table("productos").select("*, telas(*)")
+        telas_map = {t.id: t for t in self.obtener_telas(solo_activas=False)}
+        query = self.client.table("productos").select("*")
         if solo_activos:
             query = query.eq("activo", True)
         res = query.execute()
         
         productos = []
         for p in res.data:
-            tela_data = p.get("telas")
-            if tela_data:
-                tela_obj = Tela(
-                    id=tela_data["id"],
-                    nombre=tela_data["nombre"],
-                    precio_kilo=tela_data["precio_kilo"],
-                    rendimiento=tela_data["rendimiento"],
-                    descripcion=tela_data.get("descripcion") or "",
-                    activo=bool(tela_data.get("activo", True))
-                )
-            else:
+            tela_id_val = p.get("tela_id")
+            tela_obj = telas_map.get(tela_id_val) if tela_id_val is not None else None
+            if not tela_obj:
                 tela_obj = Tela(id=0, nombre="Tela no disponible", precio_kilo=0.0, rendimiento=1.0, descripcion="", activo=False)
+
+            tela_sec_id = p.get("tela_secundaria_id")
+            consumo_sec = seguro_float(p.get("consumo_metros_secundaria"), 0.0)
+            tela_sec_obj = None
+            if tela_sec_id is not None and consumo_sec > 0:
+                tela_sec_obj = telas_map.get(int(tela_sec_id))
             
             costo_conf = p.get("costo_confeccion", 0.0)
             tipo_est = p.get("tipo_estampado") or "Ninguno"
@@ -264,13 +275,15 @@ class Database:
                 id=p["id"],
                 nombre=p["nombre"],
                 tela=tela_obj,
-                consumo_metros=p["consumo_metros"],
-                costo_confeccion=costo_conf,
+                consumo_metros=seguro_float(p.get("consumo_metros"), 0.0),
+                costo_confeccion=seguro_float(costo_conf, 0.0),
                 tipo_estampado=tipo_est,
                 consumo_estampado=consumo_est,
                 nombre_avio=nombre_av,
                 costo_avio=costo_av,
-                activo=bool(p.get("activo", True))
+                activo=bool(p.get("activo", True)),
+                tela_secundaria=tela_sec_obj,
+                consumo_metros_secundaria=consumo_sec if tela_sec_obj else 0.0,
             ))
         return productos
 
@@ -320,9 +333,12 @@ class Database:
         return res.data[0] if res.data else None
 
     def obtener_detalles_presupuesto(self, presupuesto_id: int) -> list:
-        return self.client.table("presupuesto_detalles").select(
-            "*, productos(id, nombre, tipo_estampado, activo, telas(id, nombre, activo))"
-        ).eq("presupuesto_id", presupuesto_id).execute().data
+        try:
+            return self.client.table("presupuesto_detalles").select(
+                "*, productos(id, nombre, tipo_estampado, activo)"
+            ).eq("presupuesto_id", presupuesto_id).execute().data
+        except Exception:
+            return self.client.table("presupuesto_detalles").select("*").eq("presupuesto_id", presupuesto_id).execute().data
 
     def eliminar_presupuesto(self, presupuesto_id: int):
         # Borrado lógico: se marca activo = False tanto en presupuesto como en sus detalles
@@ -370,11 +386,27 @@ class Database:
                 datos_base = {"nombre": nombre, "precio_kilo": precio_kilo, "rendimiento": rendimiento}
                 self.client.table("telas").insert(datos_base).execute()
 
-    def agregar_producto(self, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0, nombre_avio: str = "", costo_avio: float = 0.0):
+    def agregar_producto(
+        self,
+        nombre: str,
+        tela_id: int,
+        consumo: float,
+        costo_confeccion: float,
+        tipo_estampado: str = "Ninguno",
+        consumo_estampado: float = 0.0,
+        nombre_avio: str = "",
+        costo_avio: float = 0.0,
+        tela_secundaria_id: Optional[int] = None,
+        consumo_metros_secundaria: float = 0.0,
+    ):
+        sec_id = int(tela_secundaria_id) if (tela_secundaria_id and consumo_metros_secundaria > 0) else None
+        sec_consumo = float(consumo_metros_secundaria) if sec_id is not None else 0.0
         datos = {
             "nombre": nombre, 
             "tela_id": tela_id, 
             "consumo_metros": consumo,
+            "tela_secundaria_id": sec_id,
+            "consumo_metros_secundaria": sec_consumo,
             "costo_confeccion": costo_confeccion,
             "tipo_estampado": tipo_estampado,
             "consumo_estampado": consumo_estampado,
@@ -385,17 +417,19 @@ class Database:
         try:
             self.client.table("productos").insert(datos).execute()
         except Exception:
-            datos_fallback = {
+            datos_sin_sec = {
                 "nombre": nombre, 
                 "tela_id": tela_id, 
                 "consumo_metros": consumo,
                 "costo_confeccion": costo_confeccion,
                 "tipo_estampado": tipo_estampado,
                 "consumo_estampado": consumo_estampado,
+                "nombre_avio": nombre_avio,
+                "costo_avio": costo_avio,
                 "activo": True
             }
             try:
-                self.client.table("productos").insert(datos_fallback).execute()
+                self.client.table("productos").insert(datos_sin_sec).execute()
             except Exception:
                 datos_base = {
                     "nombre": nombre, 
@@ -406,11 +440,28 @@ class Database:
                 }
                 self.client.table("productos").insert(datos_base).execute()
 
-    def actualizar_producto(self, producto_id: int, nombre: str, tela_id: int, consumo: float, costo_confeccion: float, tipo_estampado: str = "Ninguno", consumo_estampado: float = 0.0, nombre_avio: str = "", costo_avio: float = 0.0):
+    def actualizar_producto(
+        self,
+        producto_id: int,
+        nombre: str,
+        tela_id: int,
+        consumo: float,
+        costo_confeccion: float,
+        tipo_estampado: str = "Ninguno",
+        consumo_estampado: float = 0.0,
+        nombre_avio: str = "",
+        costo_avio: float = 0.0,
+        tela_secundaria_id: Optional[int] = None,
+        consumo_metros_secundaria: float = 0.0,
+    ):
+        sec_id = int(tela_secundaria_id) if (tela_secundaria_id and consumo_metros_secundaria > 0) else None
+        sec_consumo = float(consumo_metros_secundaria) if sec_id is not None else 0.0
         datos = {
             "nombre": nombre, 
             "tela_id": tela_id, 
             "consumo_metros": consumo,
+            "tela_secundaria_id": sec_id,
+            "consumo_metros_secundaria": sec_consumo,
             "costo_confeccion": costo_confeccion,
             "tipo_estampado": tipo_estampado,
             "consumo_estampado": consumo_estampado,
@@ -420,16 +471,18 @@ class Database:
         try:
             self.client.table("productos").update(datos).eq("id", producto_id).execute()
         except Exception:
-            datos_fallback = {
+            datos_sin_sec = {
                 "nombre": nombre, 
                 "tela_id": tela_id, 
                 "consumo_metros": consumo,
                 "costo_confeccion": costo_confeccion,
                 "tipo_estampado": tipo_estampado,
-                "consumo_estampado": consumo_estampado
+                "consumo_estampado": consumo_estampado,
+                "nombre_avio": nombre_avio,
+                "costo_avio": costo_avio
             }
             try:
-                self.client.table("productos").update(datos_fallback).eq("id", producto_id).execute()
+                self.client.table("productos").update(datos_sin_sec).eq("id", producto_id).execute()
             except Exception:
                 datos_base = {
                     "nombre": nombre, 
