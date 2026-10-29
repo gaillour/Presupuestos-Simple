@@ -75,6 +75,7 @@ class Config:
         precio_unidad_serigrafia: float = 0.0,
         precio_unidad_bordado: float = 0.0,
         descripcion_pdf: str = "",
+        precios_estampado: dict = None,
         **kwargs
     ):
         self.costo_fijo_base = seguro_float(costo_fijo_base, 6000.0)
@@ -84,6 +85,17 @@ class Config:
         self.precio_unidad_serigrafia = seguro_float(precio_unidad_serigrafia, 0.0)
         self.precio_unidad_bordado = seguro_float(precio_unidad_bordado, 0.0)
         self.descripcion_pdf = str(descripcion_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
+        self.precios_estampado = {
+            "dtf": self.precio_metro_dtf,
+            "sublimacion": self.precio_metro_sublimacion,
+            "serigrafia": self.precio_unidad_serigrafia,
+            "bordado": self.precio_unidad_bordado,
+        }
+        if isinstance(precios_estampado, dict):
+            for k, v in precios_estampado.items():
+                clave = normalizar_texto(str(k))
+                if clave:
+                    self.precios_estampado[clave] = seguro_float(v, 0.0)
 
 @dataclass
 class Tela:
@@ -126,6 +138,9 @@ class Producto:
         if not self.tipo_estampado or self.tipo_estampado == "Ninguno" or self.consumo_estampado <= 0:
             return 0.0
         tipo = normalizar_texto(self.tipo_estampado)
+        precios_map = getattr(config, "precios_estampado", None)
+        if isinstance(precios_map, dict) and tipo in precios_map:
+            return self.consumo_estampado * seguro_float(precios_map[tipo], 0.0)
         if tipo == "dtf":
             return self.consumo_estampado * config.precio_metro_dtf
         elif tipo == "sublimacion":
@@ -141,8 +156,8 @@ class Producto:
         return self.costo_base + self.costo_estampado(config)
 
     def precio_venta(self, config: Config) -> float:
-        # Precio de venta en catálogo con multiplicador y costo fijo
-        return (self.costo_produccion(config) * config.multiplicador_default) + config.costo_fijo_base
+        # Precio de venta en catálogo: (costo_base * multiplicador) + costo_fijo + costo_estampado
+        return (self.costo_base * config.multiplicador_default) + config.costo_fijo_base + self.costo_estampado(config)
 
 
 @dataclass
@@ -173,7 +188,7 @@ class Presupuesto:
 
     # LA NUEVA FÓRMULA MATEMÁTICA POR PRENDA
     def precio_unitario_final(self, item: ItemPresupuesto) -> float:
-        return (item.costo_base_unitario * self.multiplicador_usado) + self.costo_fijo_usado
+        return (item.producto.costo_base * self.multiplicador_usado) + self.costo_fijo_usado + item.costo_estampado
 
     def subtotal_final(self, item: ItemPresupuesto) -> float:
         return self.precio_unitario_final(item) * item.cantidad
@@ -431,7 +446,50 @@ class Database:
     # --- MÉTODOS AUXILIARES PARA LOS SELECTS ---
     
     def obtener_tipos_estampado(self):
-        return self.client.table("tipo_estampado").select("*").execute().data
+        try:
+            data = self.client.table("tipo_estampado").select("*").order("id").execute().data
+        except Exception:
+            data = self.client.table("tipo_estampado").select("*").execute().data
+        return [
+            {
+                "id": int(item["id"]),
+                "nombre": str(item.get("nombre") or "").strip(),
+                "costo": seguro_float(item.get("costo"), 0.0),
+            }
+            for item in (data or [])
+            if str(item.get("nombre") or "").strip()
+        ]
+
+    def agregar_tipo_estampado(self, nombre: str, costo: float) -> dict:
+        nombre_limpio = nombre.strip()
+        clave_norm = normalizar_texto(nombre_limpio)
+        existentes = self.obtener_tipos_estampado()
+        for item in existentes:
+            if normalizar_texto(item["nombre"]) == clave_norm:
+                res = self.client.table("tipo_estampado").update({
+                    "nombre": nombre_limpio,
+                    "costo": float(costo),
+                }).eq("id", item["id"]).execute()
+                row = res.data[0] if res.data else {"id": item["id"], "nombre": nombre_limpio, "costo": float(costo)}
+                return {"id": int(row["id"]), "nombre": str(row["nombre"]), "costo": seguro_float(row.get("costo"), 0.0)}
+        res = self.client.table("tipo_estampado").insert({
+            "nombre": nombre_limpio,
+            "costo": float(costo),
+        }).execute()
+        row = res.data[0]
+        return {"id": int(row["id"]), "nombre": str(row["nombre"]), "costo": seguro_float(row.get("costo"), 0.0)}
+
+    def actualizar_tipo_estampado(self, estampado_id: int, nombre: str, costo: float) -> dict:
+        nombre_limpio = nombre.strip()
+        res = self.client.table("tipo_estampado").update({
+            "nombre": nombre_limpio,
+            "costo": float(costo),
+        }).eq("id", estampado_id).execute()
+        row = res.data[0] if res.data else {"id": estampado_id, "nombre": nombre_limpio, "costo": float(costo)}
+        return {"id": int(row["id"]), "nombre": str(row["nombre"]), "costo": seguro_float(row.get("costo"), 0.0)}
+
+    def eliminar_tipo_estampado(self, estampado_id: int):
+        self.client.table("tipo_estampado").delete().eq("id", estampado_id).execute()
 
     # --- MÉTODOS DE CONFIGURACIÓN ---
     def obtener_configuracion(self):
@@ -459,10 +517,12 @@ class Database:
             "precio_metro_sublimacion": seguro_float(estampados_dict.get("sublimacion"), 0.0),
             "precio_unidad_serigrafia": seguro_float(estampados_dict.get("serigrafia"), 0.0),
             "precio_unidad_bordado": seguro_float(estampados_dict.get("bordado"), 0.0),
-            "descripcion_pdf": str(desc_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
+            "descripcion_pdf": str(desc_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."),
+            "tipos_estampado": estampados,
+            "precios_estampado": estampados_dict,
         }
 
-    def actualizar_configuracion(self, costo_fijo: float, multiplicador: float, precio_dtf: float = 0.0, precio_sublimacion: float = 0.0, precio_serigrafia: float = 0.0, precio_bordado: float = 0.0, descripcion_pdf: str = ""):
+    def actualizar_configuracion(self, costo_fijo: float, multiplicador: float, precio_dtf: float = 0.0, precio_sublimacion: float = 0.0, precio_serigrafia: float = 0.0, precio_bordado: float = 0.0, descripcion_pdf: str = "", tipos_estampado: list = None):
         guardar_config_extra({"descripcion_pdf": descripcion_pdf})
         try:
             self.client.table("configuracion").update({
@@ -475,6 +535,19 @@ class Database:
                 "costo_fijo": costo_fijo, 
                 "multiplicador": multiplicador
             }).eq("id", 1).execute()
+
+        if tipos_estampado is not None:
+            for item in tipos_estampado:
+                item_id = item.get("id")
+                nombre_val = str(item.get("nombre") or "").strip()
+                costo_val = seguro_float(item.get("costo"), 0.0)
+                if not nombre_val:
+                    continue
+                if item_id:
+                    self.actualizar_tipo_estampado(int(item_id), nombre_val, costo_val)
+                else:
+                    self.agregar_tipo_estampado(nombre_val, costo_val)
+            return
 
         # Obtenemos estampados existentes
         estampados_actuales = self.obtener_tipos_estampado()

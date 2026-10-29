@@ -175,6 +175,12 @@ class UserResponse(BaseModel):
     role: str = "authenticated"
 
 
+class TipoEstampadoInput(BaseModel):
+    id: Optional[int] = Field(None, description="ID de la técnica de estampado")
+    nombre: str = Field(..., min_length=1, description="Nombre de la técnica de estampado")
+    costo: float = Field(0.0, ge=0, description="Costo unitario o por metro de la técnica")
+
+
 class ConfiguracionUpdate(BaseModel):
     costo_fijo: float = Field(..., ge=0, description="Costo fijo base por prenda")
     multiplicador: float = Field(..., ge=1.0, description="Multiplicador / margen de ganancia general")
@@ -183,6 +189,7 @@ class ConfiguracionUpdate(BaseModel):
     precio_serigrafia: float = Field(0.0, ge=0, description="Precio por unidad de Serigrafía")
     precio_bordado: float = Field(0.0, ge=0, description="Precio por unidad de Bordado")
     descripcion_pdf: str = Field("", description="Condiciones u observaciones al pie del PDF")
+    tipos_estampado: Optional[List[TipoEstampadoInput]] = Field(None, description="Lista dinámica de técnicas de estampado")
 
 
 class TelaCreate(BaseModel):
@@ -248,6 +255,7 @@ def _obtener_config_obj() -> Config:
         precio_unidad_serigrafia=seguro_float(cfg_data.get("precio_unidad_serigrafia"), 0.0),
         precio_unidad_bordado=seguro_float(cfg_data.get("precio_unidad_bordado"), 0.0),
         descripcion_pdf=str(cfg_data.get("descripcion_pdf", "")),
+        precios_estampado=cfg_data.get("precios_estampado"),
     )
 
 
@@ -354,6 +362,11 @@ def obtener_configuracion(user=Depends(get_current_user)):
 @app.put("/api/configuracion", tags=["Configuración"])
 def actualizar_configuracion(datos: ConfiguracionUpdate, user=Depends(get_current_user)):
     try:
+        tipos_payload = (
+            [t.model_dump() for t in datos.tipos_estampado]
+            if datos.tipos_estampado is not None
+            else None
+        )
         db.actualizar_configuracion(
             costo_fijo=datos.costo_fijo,
             multiplicador=datos.multiplicador,
@@ -362,6 +375,7 @@ def actualizar_configuracion(datos: ConfiguracionUpdate, user=Depends(get_curren
             precio_serigrafia=datos.precio_serigrafia,
             precio_bordado=datos.precio_bordado,
             descripcion_pdf=datos.descripcion_pdf,
+            tipos_estampado=tipos_payload,
         )
         return {
             "message": "Configuración actualizada correctamente",
@@ -763,6 +777,53 @@ def listar_tipos_estampado(user=Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=mensaje_error_amigable(e, "obtener los tipos de estampado"),
+        )
+
+
+@app.post("/api/tipos-estampado", status_code=status.HTTP_201_CREATED, tags=["Estampados"])
+def crear_tipo_estampado(datos: TipoEstampadoInput, user=Depends(get_current_user)):
+    try:
+        creado = db.agregar_tipo_estampado(datos.nombre, datos.costo)
+        return {
+            "message": "Técnica de estampado guardada correctamente",
+            "tipo_estampado": creado,
+            "tipos_estampado": db.obtener_tipos_estampado(),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=mensaje_error_amigable(e, "agregar la técnica de estampado"),
+        )
+
+
+@app.put("/api/tipos-estampado/{estampado_id}", tags=["Estampados"])
+def editar_tipo_estampado(estampado_id: int, datos: TipoEstampadoInput, user=Depends(get_current_user)):
+    try:
+        actualizado = db.actualizar_tipo_estampado(estampado_id, datos.nombre, datos.costo)
+        return {
+            "message": "Técnica de estampado actualizada correctamente",
+            "tipo_estampado": actualizado,
+            "tipos_estampado": db.obtener_tipos_estampado(),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=mensaje_error_amigable(e, "actualizar la técnica de estampado"),
+        )
+
+
+@app.delete("/api/tipos-estampado/{estampado_id}", tags=["Estampados"])
+def borrar_tipo_estampado(estampado_id: int, user=Depends(get_current_user)):
+    try:
+        db.eliminar_tipo_estampado(estampado_id)
+        return {
+            "message": "Técnica de estampado eliminada correctamente",
+            "tipos_estampado": db.obtener_tipos_estampado(),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=mensaje_error_amigable(e, "eliminar la técnica de estampado"),
         )
 
 
