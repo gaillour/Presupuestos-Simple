@@ -46,7 +46,7 @@ class TestCoreDomainMath(unittest.TestCase):
         # Costo tela: 4000 * 0.8 = 3200
         # Costo base: 3200 + 2000 (confección) + 300 (avío) = 5500
         # Estampa DTF: 0.25m * 10000 = 2500
-        # Precio venta: (5500 * 2.0) + 6000 + 2500 = 19500
+        # Precio venta: ((5500 + 2500) * 2.0) + 6000 = 22000
         prod = Producto(
             id=10,
             nombre="Remera Básica",
@@ -64,7 +64,7 @@ class TestCoreDomainMath(unittest.TestCase):
         self.assertAlmostEqual(prod.costo_base, 5500.0)
         self.assertAlmostEqual(prod.costo_estampado(self.config), 2500.0)
         self.assertAlmostEqual(prod.costo_produccion(self.config), 8000.0)
-        self.assertAlmostEqual(prod.precio_venta(self.config), 19500.0)
+        self.assertAlmostEqual(prod.precio_venta(self.config), 22000.0)
 
     def test_producto_dos_telas_combinadas(self):
         # Tela 1 (Algodón): 4000 * 0.7 = 2800
@@ -72,7 +72,7 @@ class TestCoreDomainMath(unittest.TestCase):
         # Costo tela total = 4800
         # Costo base = 4800 + 2200 (confección) + 0 (avío) = 7000
         # Técnica dinámica "Corte + Sublimado" (por unidad = 1): 1 * 4200 = 4200
-        # Precio venta = (7000 * 2.0) + 6000 + 4200 = 24200
+        # Precio venta = ((7000 + 4200) * 2.0) + 6000 = 28400
         prod = Producto(
             id=11,
             nombre="Remera Combinada Algodón + Lycra",
@@ -89,7 +89,7 @@ class TestCoreDomainMath(unittest.TestCase):
         self.assertAlmostEqual(prod.costo_tela, 4800.0)
         self.assertAlmostEqual(prod.costo_base, 7000.0)
         self.assertAlmostEqual(prod.costo_estampado(self.config), 4200.0)
-        self.assertAlmostEqual(prod.precio_venta(self.config), 24200.0)
+        self.assertAlmostEqual(prod.precio_venta(self.config), 28400.0)
 
     def test_presupuesto_calculo_alineado_con_front(self):
         prod = Producto(
@@ -116,10 +116,21 @@ class TestCoreDomainMath(unittest.TestCase):
             multiplicador_usado=2.5,
             costo_fijo_usado=5000.0,
         )
-        # Costo base = 7000; (7000 * 2.5) + 5000 + 4200 = 17500 + 5000 + 4200 = 26700
-        self.assertAlmostEqual(presupuesto.precio_unitario_final(item), 26700.0)
-        self.assertAlmostEqual(presupuesto.subtotal_final(item), 267000.0)
-        self.assertAlmostEqual(presupuesto.total_final, 267000.0)
+        # Costo base = 7000, estampa = 4200; ((7000 + 4200) * 2.5) + 5000 = 28000 + 5000 = 33000
+        self.assertAlmostEqual(presupuesto.precio_unitario_final(item), 33000.0)
+        self.assertAlmostEqual(presupuesto.subtotal_final(item), 330000.0)
+        self.assertAlmostEqual(presupuesto.total_final, 330000.0)
+
+        # Con multiplicador y costo fijo default, el presupuesto coincide exactamente con precio_venta de catálogo
+        presupuesto_default = Presupuesto(
+            cliente="Cliente Default",
+            items=[item],
+            config=self.config,
+        )
+        self.assertAlmostEqual(
+            presupuesto_default.precio_unitario_final(item),
+            prod.precio_venta(self.config),
+        )
 
 
 class TestDatabaseQueriesAndFallbacks(unittest.TestCase):
@@ -263,7 +274,7 @@ class TestApiEndpoints(unittest.TestCase):
             self.assertEqual(data[0]["tela_secundaria"]["nombre"], "Lycra")
             self.assertAlmostEqual(data[0]["consumo_metros_secundaria"], 0.25)
             self.assertAlmostEqual(data[0]["costo_tela"], 4800.0)
-            self.assertAlmostEqual(data[0]["precio_venta"], 24200.0)
+            self.assertAlmostEqual(data[0]["precio_venta"], 28400.0)
 
             res_post = self.client.post(
                 "/api/productos",
@@ -294,6 +305,111 @@ class TestApiEndpoints(unittest.TestCase):
                 tela_secundaria_id=2,
                 consumo_metros_secundaria=0.25,
             )
+
+    def test_crear_presupuesto_con_descripcion_pdf(self):
+        t1 = Tela(id=1, nombre="Algodón", precio_kilo=12000.0, rendimiento=3.0)
+        prod = Producto(id=1, nombre="Remera", tela=t1, consumo_metros=1.0, costo_confeccion=1000.0)
+        cfg = Config()
+
+        with patch.object(self.api, "_obtener_config_obj", return_value=cfg), \
+             patch.object(self.api.db, "obtener_productos", return_value=[prod]), \
+             patch.object(self.api.db, "guardar_presupuesto", return_value=123) as mock_guardar:
+
+            res = self.client.post(
+                "/api/presupuestos",
+                headers=self.headers,
+                json={
+                    "cliente": "Cliente Test",
+                    "descripcion_pdf": "Validez 7 días",
+                    "items": [{"producto_id": 1, "cantidad": 10}],
+                },
+            )
+            self.assertEqual(res.status_code, 201)
+            self.assertEqual(res.json()["id"], 123)
+            presupuesto_arg = mock_guardar.call_args[0][0]
+            self.assertEqual(presupuesto_arg.descripcion_pdf, "Validez 7 días")
+
+    @patch("core.create_client")
+    def test_guardar_presupuesto_con_descripcion_pdf_en_db(self, mock_create_client):
+        mock_client = MagicMock()
+        mock_create_client.return_value = mock_client
+        mock_presupuestos_tbl = MagicMock()
+        mock_detalles_tbl = MagicMock()
+
+        def table_side_effect(name):
+            if name == "presupuestos":
+                mock_presupuestos_tbl.insert.return_value.execute.return_value = DummyResponse([{"id": 99}])
+                return mock_presupuestos_tbl
+            if name == "presupuesto_detalles":
+                mock_detalles_tbl.insert.return_value.execute.return_value = DummyResponse([])
+                return mock_detalles_tbl
+            return MagicMock()
+
+        mock_client.table.side_effect = table_side_effect
+        db = Database()
+        p = Presupuesto(
+            cliente="Juan Perez",
+            items=[],
+            config=Config(),
+            descripcion_pdf="Condiciones particulares: 50% seña.",
+        )
+        pid = db.guardar_presupuesto(p)
+        self.assertEqual(pid, 99)
+        insert_arg = mock_presupuestos_tbl.insert.call_args[0][0]
+        self.assertEqual(insert_arg["descripcion_pdf"], "Condiciones particulares: 50% seña.")
+
+    def test_descargar_pdf_con_descripcion_propia(self):
+        cabecera_mock = {
+            "id": 1,
+            "cliente_referencia": "Cliente Especial",
+            "precio_total": 50000.0,
+            "created_at": "2026-11-02T12:00:00Z",
+            "activo": True,
+            "descripcion_pdf": "Texto personalizado en el PDF del cliente.",
+        }
+        cfg_mock = {
+            "costo_fijo": 6000.0,
+            "multiplicador": 2.0,
+            "descripcion_pdf": "Texto base global de la config.",
+        }
+
+        with patch.object(self.api.db, "obtener_presupuesto_por_id", return_value=cabecera_mock), \
+             patch.object(self.api.db, "obtener_detalles_presupuesto", return_value=[]), \
+             patch.object(self.api.db, "obtener_configuracion", return_value=cfg_mock), \
+             patch("api.generar_pdf_presupuesto", return_value=b"%PDF-1.4 test") as mock_pdf:
+
+            res = self.client.get("/api/presupuestos/1/pdf", headers=self.headers)
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.content, b"%PDF-1.4 test")
+            self.assertEqual(res.headers["content-type"], "application/pdf")
+
+            call_kwargs = mock_pdf.call_args[1]
+            self.assertEqual(call_kwargs["descripcion_pdf"], "Texto personalizado en el PDF del cliente.")
+
+    def test_descargar_pdf_fallback_config(self):
+        cabecera_mock = {
+            "id": 2,
+            "cliente_referencia": "Cliente Sin Texto",
+            "precio_total": 20000.0,
+            "created_at": "2026-11-02T12:00:00Z",
+            "activo": True,
+            "descripcion_pdf": None,
+        }
+        cfg_mock = {
+            "costo_fijo": 6000.0,
+            "multiplicador": 2.0,
+            "descripcion_pdf": "Texto base global de la config.",
+        }
+
+        with patch.object(self.api.db, "obtener_presupuesto_por_id", return_value=cabecera_mock), \
+             patch.object(self.api.db, "obtener_detalles_presupuesto", return_value=[]), \
+             patch.object(self.api.db, "obtener_configuracion", return_value=cfg_mock), \
+             patch("api.generar_pdf_presupuesto", return_value=b"%PDF-1.4 test") as mock_pdf:
+
+            res = self.client.get("/api/presupuestos/2/pdf", headers=self.headers)
+            self.assertEqual(res.status_code, 200)
+            call_kwargs = mock_pdf.call_args[1]
+            self.assertEqual(call_kwargs["descripcion_pdf"], "Texto base global de la config.")
 
 
 if __name__ == "__main__":

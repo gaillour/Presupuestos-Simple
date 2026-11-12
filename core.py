@@ -3,6 +3,7 @@ from typing import List
 from datetime import datetime
 import unicodedata
 import json
+import math
 import os
 import streamlit as st
 from supabase import create_client, Client
@@ -28,6 +29,28 @@ def guardar_config_extra(datos: dict):
     except Exception:
         pass
 
+PRESUPUESTOS_EXTRA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".presupuestos_extra.json")
+
+def leer_presupuestos_extra() -> dict:
+    if os.path.exists(PRESUPUESTOS_EXTRA_FILE):
+        try:
+            with open(PRESUPUESTOS_EXTRA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def guardar_presupuesto_extra(presupuesto_id: int, descripcion_pdf: str):
+    if not descripcion_pdf:
+        return
+    try:
+        actual = leer_presupuestos_extra()
+        actual[str(presupuesto_id)] = str(descripcion_pdf)
+        with open(PRESUPUESTOS_EXTRA_FILE, "w", encoding="utf-8") as f:
+            json.dump(actual, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 def normalizar_texto(texto: str) -> str:
     if not texto:
         return ""
@@ -35,10 +58,13 @@ def normalizar_texto(texto: str) -> str:
 
 
 def seguro_float(val, default: float = 0.0) -> float:
-    if val is None:
+    if val is None or val == "":
         return default
     try:
-        return float(val)
+        res = float(val)
+        if math.isnan(res) or math.isinf(res):
+            return default
+        return res
     except (ValueError, TypeError):
         return default
 
@@ -168,8 +194,8 @@ class Producto:
         return self.costo_base + self.costo_estampado(config)
 
     def precio_venta(self, config: Config) -> float:
-        # Precio de venta en catálogo: (costo_base * multiplicador) + costo_fijo + costo_estampado
-        return (self.costo_base * config.multiplicador_default) + config.costo_fijo_base + self.costo_estampado(config)
+        # Precio de venta en catálogo: ((costo_base + costo_estampado) * multiplicador) + costo_fijo
+        return ((self.costo_base + self.costo_estampado(config)) * config.multiplicador_default) + config.costo_fijo_base
 
 
 @dataclass
@@ -191,16 +217,19 @@ class Presupuesto:
     config: Config = field(default_factory=Config)
     multiplicador_usado: float = None
     costo_fijo_usado: float = None
+    descripcion_pdf: str = ""
     
     def __post_init__(self):
         if self.multiplicador_usado is None:
             self.multiplicador_usado = self.config.multiplicador_default
         if self.costo_fijo_usado is None:
             self.costo_fijo_usado = self.config.costo_fijo_base
+        if not self.descripcion_pdf and self.config:
+            self.descripcion_pdf = getattr(self.config, "descripcion_pdf", "")
 
     # LA NUEVA FÓRMULA MATEMÁTICA POR PRENDA
     def precio_unitario_final(self, item: ItemPresupuesto) -> float:
-        return (item.producto.costo_base * self.multiplicador_usado) + self.costo_fijo_usado + item.costo_estampado
+        return ((item.producto.costo_base + item.costo_estampado) * self.multiplicador_usado) + self.costo_fijo_usado
 
     def subtotal_final(self, item: ItemPresupuesto) -> float:
         return self.precio_unitario_final(item) * item.cantidad
@@ -293,21 +322,36 @@ class Database:
         if isinstance(mult_val, (int, float)) and float(mult_val).is_integer():
             mult_val = int(mult_val)
 
+        desc_pdf = getattr(presupuesto, "descripcion_pdf", "") or ""
+
         cabecera = {
             "cliente_referencia": presupuesto.cliente,
             "multiplicador": mult_val,
             "costo_fijo": float(presupuesto.costo_fijo_usado),
             "precio_total": float(presupuesto.total_final),
-            "activo": True
+            "activo": True,
+            "descripcion_pdf": desc_pdf,
         }
         try:
             res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
         except Exception:
-            # Fallback en caso de que la columna multiplicador sea bigint y se haya ingresado un decimal
-            cabecera["multiplicador"] = int(round(float(presupuesto.multiplicador_usado)))
-            res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
+            # Fallback 1: probar con multiplicador redondeado
+            try:
+                cabecera["multiplicador"] = int(round(float(presupuesto.multiplicador_usado)))
+                res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
+            except Exception:
+                # Fallback 2: si la columna descripcion_pdf aún no existe en Supabase
+                cabecera.pop("descripcion_pdf", None)
+                try:
+                    cabecera["multiplicador"] = mult_val
+                    res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
+                except Exception:
+                    cabecera["multiplicador"] = int(round(float(presupuesto.multiplicador_usado)))
+                    res_cabecera = self.client.table("presupuestos").insert(cabecera).execute()
 
         presupuesto_id = res_cabecera.data[0]["id"]
+        if desc_pdf:
+            guardar_presupuesto_extra(presupuesto_id, desc_pdf)
 
         detalles = []
         for item in presupuesto.items:
@@ -326,11 +370,26 @@ class Database:
         query = self.client.table("presupuestos").select("*")
         if solo_activos:
             query = query.eq("activo", True)
-        return query.order("id", desc=True).execute().data
+        rows = query.order("id", desc=True).execute().data
+        extras = leer_presupuestos_extra()
+        if extras and rows:
+            for r in rows:
+                pid_str = str(r.get("id"))
+                if not r.get("descripcion_pdf") and pid_str in extras:
+                    r["descripcion_pdf"] = extras[pid_str]
+        return rows
 
     def obtener_presupuesto_por_id(self, presupuesto_id: int) -> dict:
         res = self.client.table("presupuestos").select("*").eq("id", presupuesto_id).execute()
-        return res.data[0] if res.data else None
+        if not res.data:
+            return None
+        row = res.data[0]
+        if not row.get("descripcion_pdf"):
+            extras = leer_presupuestos_extra()
+            pid_str = str(presupuesto_id)
+            if pid_str in extras:
+                row["descripcion_pdf"] = extras[pid_str]
+        return row
 
     def obtener_detalles_presupuesto(self, presupuesto_id: int) -> list:
         try:
@@ -502,7 +561,10 @@ class Database:
         try:
             data = self.client.table("tipo_estampado").select("*").order("id").execute().data
         except Exception:
-            data = self.client.table("tipo_estampado").select("*").execute().data
+            try:
+                data = self.client.table("tipo_estampado").select("*").execute().data
+            except Exception:
+                data = []
         return [
             {
                 "id": int(item["id"]),
@@ -561,7 +623,10 @@ class Database:
         desc_pdf = config_data.get("descripcion_pdf")
         if not desc_pdf:
             extra = leer_config_extra()
-            desc_pdf = extra.get("descripcion_pdf", "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos.")
+            if "descripcion_pdf" in extra:
+                desc_pdf = extra["descripcion_pdf"]
+        if desc_pdf is None:
+            desc_pdf = "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."
 
         return {
             "costo_fijo": seguro_float(config_data.get("costo_fijo"), 6000.0),
@@ -570,7 +635,7 @@ class Database:
             "precio_metro_sublimacion": seguro_float(estampados_dict.get("sublimacion"), 0.0),
             "precio_unidad_serigrafia": seguro_float(estampados_dict.get("serigrafia"), 0.0),
             "precio_unidad_bordado": seguro_float(estampados_dict.get("bordado"), 0.0),
-            "descripcion_pdf": str(desc_pdf or "Presupuesto válido por 15 días corridos a partir de la fecha de emisión. Precios sujetos a variación de insumos."),
+            "descripcion_pdf": str(desc_pdf),
             "tipos_estampado": estampados,
             "precios_estampado": estampados_dict,
         }
@@ -632,13 +697,32 @@ class Database:
 
 # --- FUNCIONES DE EXPORTACIÓN ---
 
+def sanitizar_texto_pdf(texto: str) -> str:
+    if not texto:
+        return ""
+    t = str(texto)
+    reemplazos = {
+        "–": "-",
+        "—": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "•": "*",
+        "…": "...",
+    }
+    for orig, rep in reemplazos.items():
+        t = t.replace(orig, rep)
+    return t.encode("latin-1", "ignore").decode("latin-1").strip()
+
+
 def generar_pdf_presupuesto(presupuesto_o_cliente, items: list = None, total: float = None, fecha: str = None, descripcion_pdf: str = None) -> bytes:
     if isinstance(presupuesto_o_cliente, Presupuesto):
         presupuesto = presupuesto_o_cliente
-        cliente = presupuesto.cliente or "Consumidor Final"
+        cliente = sanitizar_texto_pdf(presupuesto.cliente) or "Consumidor Final"
         items_data = [
             {
-                "nombre": item.producto.nombre,
+                "nombre": sanitizar_texto_pdf(item.producto.nombre),
                 "cantidad": item.cantidad,
                 "precio_unitario": presupuesto.precio_unitario_final(item),
                 "subtotal": presupuesto.subtotal_final(item),
@@ -647,13 +731,18 @@ def generar_pdf_presupuesto(presupuesto_o_cliente, items: list = None, total: fl
         ]
         total_val = presupuesto.total_final
         fecha_val = datetime.now().strftime("%d/%m/%Y")
-        desc_final = descripcion_pdf or getattr(presupuesto.config, "descripcion_pdf", "")
+        desc_final = (
+            descripcion_pdf
+            if descripcion_pdf is not None
+            else (getattr(presupuesto, "descripcion_pdf", None) or getattr(presupuesto.config, "descripcion_pdf", ""))
+        )
+        desc_final = sanitizar_texto_pdf(desc_final)
     else:
-        cliente = str(presupuesto_o_cliente or "Consumidor Final")
+        cliente = sanitizar_texto_pdf(str(presupuesto_o_cliente or "Consumidor Final")) or "Consumidor Final"
         items_data = items or []
         total_val = total if total is not None else sum(float(i.get("subtotal", 0.0)) for i in items_data)
         fecha_val = fecha or datetime.now().strftime("%d/%m/%Y")
-        desc_final = descripcion_pdf or ""
+        desc_final = sanitizar_texto_pdf(descripcion_pdf or "")
 
     class PDF(FPDF):
         def header(self):
@@ -715,13 +804,15 @@ def generar_pdf_presupuesto(presupuesto_o_cliente, items: list = None, total: fl
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(40, 40, 40)
     for item in items_data:
-        nombre = str(item.get("nombre", ""))
-        cant = str(item.get("cantidad", 0))
-        p_unit = f"${float(item.get('precio_unitario', 0.0)):,.2f}"
-        subt = f"${float(item.get('subtotal', 0.0)):,.2f}"
+        nombre = sanitizar_texto_pdf(str(item.get("nombre", "")))
+        cant_num = int(seguro_float(item.get("cantidad", 0), 0.0))
+        p_val = seguro_float(item.get("precio_unitario", 0.0), 0.0)
+        s_val = seguro_float(item.get("subtotal", 0.0), 0.0)
+        p_unit = f"${p_val:,.2f}"
+        subt = f"${s_val:,.2f}"
 
         pdf.cell(100, 7, nombre[:50], border=1, align="L")
-        pdf.cell(25, 7, cant, border=1, align="R")
+        pdf.cell(25, 7, str(cant_num), border=1, align="R")
         pdf.cell(32, 7, p_unit, border=1, align="R")
         pdf.cell(33, 7, subt, border=1, new_x="LMARGIN", new_y="NEXT", align="R")
 
@@ -730,9 +821,10 @@ def generar_pdf_presupuesto(presupuesto_o_cliente, items: list = None, total: fl
     # Total
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_fill_color(240, 245, 255)
-    cant_total = sum(int(item.get("cantidad", 0)) for item in items_data)
+    cant_total = sum(int(seguro_float(item.get("cantidad", 0), 0.0)) for item in items_data)
+    total_num = seguro_float(total_val, 0.0)
     pdf.cell(125, 10, f"Total Prendas: {cant_total} u.", border=0, align="L")
-    pdf.cell(65, 10, f"TOTAL: ${total_val:,.2f}", border=1, fill=True, new_x="LMARGIN", new_y="NEXT", align="R")
+    pdf.cell(65, 10, f"TOTAL: ${total_num:,.2f}", border=1, fill=True, new_x="LMARGIN", new_y="NEXT", align="R")
 
     # Observaciones y condiciones personalizadas
     if desc_final and desc_final.strip():
