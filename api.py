@@ -38,7 +38,7 @@ if frontend_url and frontend_url.strip() not in allowed_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"^(https://.*\.vercel\.app|http://(localhost|127\.0\.0\.1)(:\d+)?)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -243,6 +243,7 @@ class PresupuestoRequest(BaseModel):
     cliente: str = Field(..., min_length=1, description="Nombre o referencia del cliente")
     multiplicador: Optional[float] = Field(None, ge=1.0, description="Multiplicador personalizado (opcional)")
     costo_fijo: Optional[float] = Field(None, ge=0, description="Costo fijo personalizado (opcional)")
+    descripcion_pdf: Optional[str] = Field(None, description="Condiciones u observaciones particulares para este presupuesto")
     items: List[ItemPresupuestoInput] = Field(..., min_length=1, description="Lista de ítems cotizados")
 
 
@@ -612,6 +613,11 @@ def _construir_objeto_presupuesto(datos: PresupuestoRequest) -> Presupuesto:
 
     mult_val = datos.multiplicador if datos.multiplicador is not None else config_obj.multiplicador_default
     costo_fijo_val = datos.costo_fijo if datos.costo_fijo is not None else config_obj.costo_fijo_base
+    desc_pdf_val = (
+        datos.descripcion_pdf
+        if datos.descripcion_pdf is not None
+        else config_obj.descripcion_pdf
+    )
 
     return Presupuesto(
         cliente=datos.cliente,
@@ -619,6 +625,7 @@ def _construir_objeto_presupuesto(datos: PresupuestoRequest) -> Presupuesto:
         config=config_obj,
         multiplicador_usado=mult_val,
         costo_fijo_usado=costo_fijo_val,
+        descripcion_pdf=desc_pdf_val,
     )
 
 
@@ -763,12 +770,18 @@ def descargar_pdf_presupuesto(presupuesto_id: int, user=Depends(verificar_acceso
         else:
             fecha_str = datetime.now().strftime("%d/%m/%Y")
 
+        desc_presupuesto = cabecera.get("descripcion_pdf")
+        if desc_presupuesto is not None and str(desc_presupuesto).strip() != "":
+            desc_pdf_final = str(desc_presupuesto).strip()
+        else:
+            desc_pdf_final = str(cfg_data.get("descripcion_pdf", "")).strip()
+
         pdf_bytes = generar_pdf_presupuesto(
             presupuesto_o_cliente=cabecera.get("cliente_referencia", "Consumidor Final"),
             items=items_para_pdf,
             total=float(cabecera.get("precio_total", 0.0)),
             fecha=fecha_str,
-            descripcion_pdf=cfg_data.get("descripcion_pdf", ""),
+            descripcion_pdf=desc_pdf_final,
         )
 
         return Response(
